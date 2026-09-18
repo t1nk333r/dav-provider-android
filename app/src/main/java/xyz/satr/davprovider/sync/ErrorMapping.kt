@@ -75,24 +75,27 @@ internal class ErrorMapping(
      * §5 class 11: dav4jvm accepted a response as one, then failed to read its body — the XML could not
      * be parsed, or the stream ended before it did.
      *
-     * The cause chain is the discriminator, and only this side can see it: dav4jvm sometimes wraps the
-     * failure in its own [DavException] with no status of its own, and sometimes lets the raw I/O
-     * failure through. Either way the exchange produced a response, which is what separates this from
-     * the transport class. A redirect is left to the classifier, because §5's redirect rules are what
-     * explain it.
+     * The gate comes first: a parse failure needs something that was parsed, so with no response this
+     * is the transport class however the read failed. An `EOFException` while waiting for the status
+     * line is a dropped connection, not a body we could not understand, and class 11 would make it
+     * non-retryable — the opposite of what a server that went away deserves.
+     *
+     * Past the gate, the cause chain is the discriminator, and only this side can see it: dav4jvm
+     * sometimes wraps the failure in its own [DavException] with no status of its own, and sometimes
+     * lets the raw I/O failure through. A redirect is left to the classifier.
      *
      * Without this, a listing cut short mid-body would be classified by the 207 that carried it and —
      * being a success — quietly become informational, passing for a listing that completed.
      */
     private fun isMalformed(cause: Throwable, evidence: ResponseEvidence): Boolean {
+        val status = evidence.httpStatus ?: return false
+        if (status in 300..399) return false
+
         var current: Throwable? = cause
         while (current != null) {
             if (current is XmlPullParserException || current is EOFException) return true
             current = current.cause
         }
-
-        val status = evidence.httpStatus ?: return false
-        if (status in 300..399) return false
 
         return (cause is DavException && cause.statusCode == null) || cause is IOException
     }

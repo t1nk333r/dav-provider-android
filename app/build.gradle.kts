@@ -10,8 +10,12 @@ android {
         applicationId = "xyz.satr.davprovider"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        // Bumped on every build that produces an APK — see AGENTS.md, "Versioning". A build whose
+        // code is unchanged but whose version is not tells you nothing about which APK is on the
+        // phone, and Android refuses to install one whose versionCode goes backwards, so this only
+        // ever increases.
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     compileOptions {
@@ -20,6 +24,12 @@ android {
         isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        // Off by default since AGP 8, and needed because the settings screen shows the version it
+        // was built with — the only way to tell one installed build from another.
+        buildConfig = true
     }
 
     kotlin {

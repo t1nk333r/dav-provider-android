@@ -133,6 +133,8 @@
     <string name="log_file_name" translatable="false">sync-log.txt</string>
     <string name="log_empty">Nothing recorded yet.</string>
     <string name="log_note">Header values and passwords never enter this log; header names do, because a misspelled name is a real failure mode and is not a secret. Text the server sent — the first line of a response body, and the DAV conditions it returned — is kept, because that is the server\'s answer rather than anything this app sent.</string>
+
+    <string name="settings_version">Version %1$s (%2$d)</string>
     <string name="log_collection_ok">ok</string>
     <string name="log_run_aborted">the run stopped early: a credential failure ended it before the remaining Collections</string>
     <string name="log_no_collections">ok (nothing to do: no Collections are selected)</string>

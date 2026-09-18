@@ -80,4 +80,15 @@
 
     </LinearLayout>
 
+    <!-- Which build this is. Several land on a device in a day, and the version is the only way
+         to tell one from another from the device itself. -->
+    <TextView
+        android:id="@+id/settings_version"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_horizontal"
+        android:paddingBottom="8dp"
+        android:textAppearance="?attr/textAppearanceBodySmall"
+        android:textColor="?attr/colorOnSurfaceVariant" />
+
 </LinearLayout>

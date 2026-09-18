@@ -3,6 +3,7 @@ package xyz.satr.davprovider.ui
 import android.Manifest
 import android.accounts.Account
 import android.accounts.AccountManager
+import xyz.satr.davprovider.BuildConfig
 import android.content.ContentResolver
 import android.content.Intent
 import android.content.SyncStatusObserver
@@ -107,6 +108,12 @@ class SettingsActivity : AppCompatActivity() {
         }
         findViewById<Button>(R.id.export_accounts).setOnClickListener { exportAccounts() }
         findViewById<Button>(R.id.import_accounts).setOnClickListener { importAccounts() }
+        // Read from the build rather than written into a string, so it cannot drift from the APK.
+        findViewById<TextView>(R.id.settings_version).text = getString(
+            R.string.settings_version,
+            BuildConfig.VERSION_NAME,
+            BuildConfig.VERSION_CODE,
+        )
 
         // Sync start/finish and pending changes are the only signals the platform exposes for
         // "something happened"; the status itself lives with the account record.

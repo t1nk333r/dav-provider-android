@@ -64,6 +64,17 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
     /**
      * A run happened, so this carries the truth and any earlier deferral is over. That is what makes
      * a manual sync — or the next run on Wi-Fi — clear the waiting state without anyone asking.
+     *
+     * The per-Collection list is **merged, not replaced**. Contacts and calendars are two separate
+     * runs that each report only their own Collections, so replacing the list let the second
+     * authority erase the first: a calendar that had just synced displayed "not synced yet"
+     * because the contacts run that followed it wrote a list it was not in. Collection ids are
+     * derived from the Collection URL and are therefore unique across authorities, which is what
+     * makes merging by id safe.
+     *
+     * A Collection that is deselected keeps its last entry rather than losing it, and the lookup
+     * that renders the row only asks about Collections the Account still has, so a stale entry is
+     * never shown — it is superseded the next time that Collection runs.
      */
     fun record(
         account: Account,
@@ -72,7 +83,8 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
         summary: String?,
         collections: List<CollectionReport>,
     ) {
-        manager.setUserData(account, KEY, encode(AccountReport(status, atMillis, collections, summary)))
+        val merged = mergeCollectionReports(read(account)?.collections.orEmpty(), collections)
+        manager.setUserData(account, KEY, encode(AccountReport(status, atMillis, merged, summary)))
     }
 
     /**
@@ -160,4 +172,27 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
         const val KEY_ERROR_CLASS = "errorClass"
         const val KEY_SUMMARY = "summary"
     }
+}
+
+/**
+ * Folds one run's per-Collection outcomes into what earlier runs recorded.
+ *
+ * Contacts and calendars are separate runs, and each reports only the Collections of its own
+ * authority, so this has to accumulate rather than replace: replacing is what made a freshly synced
+ * calendar read "not synced yet", because the contacts run that followed wrote a list its
+ * Collection was not in. Collection ids come from the Collection URL, so the same id from either
+ * authority is the same Collection and a later answer for one is simply newer.
+ *
+ * The order is previous-then-new so an id keeps its position and the list does not reshuffle as
+ * authorities take turns.
+ */
+internal fun mergeCollectionReports(
+    previous: List<CollectionReport>,
+    reported: List<CollectionReport>,
+): List<CollectionReport> {
+    if (previous.isEmpty()) return reported
+    val byId = LinkedHashMap<String, CollectionReport>(previous.size + reported.size)
+    previous.forEach { byId[it.collectionId] = it }
+    reported.forEach { byId[it.collectionId] = it }
+    return byId.values.toList()
 }

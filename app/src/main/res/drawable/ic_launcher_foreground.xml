@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Two arrows closing a ring: the one shape that says "this syncs" without a caption.
+
+  Drawn on the adaptive grid — a 108dp canvas whose outer 18dp on every side is fair game for the
+  launcher to crop, so the glyph is scaled into the central 72dp and keeps its silhouette under
+  every mask. The arrows are deliberately chunky: at 48dp in a launcher the strokes are what remain
+  legible, and a hairline sync glyph turns into a smudge.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="1.9"
+        android:scaleY="1.9"
+        android:translateX="31.2"
+        android:translateY="31.2">
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M12,4V1L8,5l4,4V6c3.31,0 6,2.69 6,6 0,1.01 -0.25,1.97 -0.7,2.8l1.46,1.46C19.54,15.03 20,13.57 20,12c0,-4.42 -3.58,-8 -8,-8zM12,18c-3.31,0 -6,-2.69 -6,-6 0,-1.01 0.25,-1.97 0.7,-2.8L5.24,7.74C4.46,8.97 4,10.43 4,12c0,4.42 3.58,8 8,8v3l4,-4 -4,-4v3z" />
+    </group>
+</vector>

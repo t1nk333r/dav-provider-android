@@ -38,6 +38,11 @@
             android:exported="false"
             android:label="@string/title_add_account" />
 
+        <!-- Reached from Settings only; it reads this app's own file and shows it to the user. -->
+        <activity
+            android:name=".ui.LogsActivity"
+            android:exported="false" />
+
         <!-- Authenticator: holds the account the sync framework keys on. -->
         <service
             android:name=".account.AuthenticatorService"

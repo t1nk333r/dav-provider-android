@@ -13,33 +13,19 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.provider.CalendarContract
-import android.provider.ContactsContract
-import android.text.SpannableStringBuilder
-import android.text.Spanned
-import android.text.style.ForegroundColorSpan
-import android.text.style.StyleSpan
 import android.view.LayoutInflater
 import android.view.View
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import com.google.android.material.color.MaterialColors
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.util.Locale
 import java.util.concurrent.Executors
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import xyz.satr.davprovider.R
@@ -116,7 +102,9 @@ class SettingsActivity : AppCompatActivity() {
         findViewById<Button>(R.id.add_account).setOnClickListener {
             startActivity(Intent(this, AccountSetupActivity::class.java))
         }
-        findViewById<Button>(R.id.view_log).setOnClickListener { showLog() }
+        findViewById<Button>(R.id.view_log).setOnClickListener {
+            startActivity(Intent(this, LogsActivity::class.java))
+        }
         findViewById<Button>(R.id.export_accounts).setOnClickListener { exportAccounts() }
         findViewById<Button>(R.id.import_accounts).setOnClickListener { importAccounts() }
 
@@ -790,190 +778,6 @@ class SettingsActivity : AppCompatActivity() {
             .show()
     }
 
-    // ------------------------------------------------------------ log
-
-    private fun showLog() {
-        executor.execute {
-            val entries = SyncLog(this).read()
-            main.post {
-                if (!isActive()) return@post
-                showLogDialog(entries)
-            }
-        }
-    }
-
-    /**
-     * The ring buffer, one entry per block, narrowed by level and by Account.
-     *
-     * The levels are the first thing on every line and the only thing that is coloured, because a
-     * hundred entries are read by scanning for the red one. Share exports the view rather than the
-     * file: a reader who filtered to one Account's errors is handing over exactly the question they
-     * were asking.
-     */
-    private fun showLogDialog(entries: List<SyncLog.Entry>) {
-        val view = layoutInflater.inflate(R.layout.dialog_log, null)
-        val levelFilter = view.findViewById<Spinner>(R.id.log_level_filter)
-        val accountFilter = view.findViewById<Spinner>(R.id.log_account_filter)
-        val text = view.findViewById<TextView>(R.id.log_text)
-
-        val levels: List<SyncLog.Level?> = listOf(null) + SyncLog.Level.entries
-        val accounts: List<String?> = listOf(null) + entries.mapNotNull { it.account }.distinct()
-        levelFilter.adapter = logFilterAdapter(levels.map { it?.name ?: getString(R.string.log_level_all) })
-        accountFilter.adapter = logFilterAdapter(accounts.map { it ?: getString(R.string.log_account_all) })
-
-        var visible: CharSequence = ""
-        fun render() {
-            val level = levels.getOrNull(levelFilter.selectedItemPosition)
-            val account = accounts.getOrNull(accountFilter.selectedItemPosition)
-            val shown = entries.filter {
-                (level == null || it.level == level) && (account == null || it.account == account)
-            }
-            visible = logText(shown, logFilterDescription(level, account), entries.isEmpty(), text)
-            text.text = visible
-        }
-        levelFilter.onItemSelectedListener = logFilterListener { render() }
-        accountFilter.onItemSelectedListener = logFilterListener { render() }
-        render()
-
-        AlertDialog.Builder(this)
-            .setTitle(R.string.log_title)
-            .setView(view)
-            .setPositiveButton(R.string.share) { _, _ -> shareLog(visible.toString()) }
-            .setNeutralButton(R.string.clear) { _, _ -> clearLog() }
-            .setNegativeButton(R.string.close, null)
-            .show()
-    }
-
-    /** What the viewer shows and what Share hands over, rendered by the same code. */
-    private fun logText(
-        shown: List<SyncLog.Entry>,
-        filter: String?,
-        nothingRecorded: Boolean,
-        anchor: TextView,
-    ): CharSequence {
-        if (nothingRecorded) return getString(R.string.log_empty)
-        if (shown.isEmpty()) return getString(R.string.log_filter_empty)
-        val text = SpannableStringBuilder()
-        filter?.let { text.append(getString(R.string.log_showing, it)).append("\n\n") }
-        shown.forEachIndexed { index, entry ->
-            if (index > 0) text.append("\n\n")
-            text.append(logHead(entry, anchor))
-            logDetailLines(entry).forEach { text.append("\n    ").append(it) }
-        }
-        return text
-    }
-
-    private fun logHead(entry: SyncLog.Entry, anchor: TextView): CharSequence {
-        val head = SpannableStringBuilder()
-        val start = head.length
-        head.append(entry.level.name)
-        head.setSpan(StyleSpan(Typeface.BOLD), start, head.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        head.setSpan(
-            ForegroundColorSpan(logLevelColor(anchor, entry.level)),
-            start,
-            head.length,
-            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-        )
-        head.append("  ").append(
-            listOfNotNull(
-                entry.at?.let { logTimestamp(it) },
-                getString(
-                    when (entry.kind) {
-                        SyncLog.Kind.SYNC -> R.string.log_kind_sync
-                        SyncLog.Kind.DISCOVERY -> R.string.log_kind_discovery
-                        SyncLog.Kind.UNPARSED -> R.string.log_kind_unparsed
-                    },
-                ),
-                entry.account,
-                entry.authority?.let { logAuthorityLabel(it) },
-                entry.displayName ?: entry.collectionId,
-            ).joinToString(" \u00b7 "),
-        )
-        return head
-    }
-
-    /**
-     * The facts under the level: the summary first, then the evidence in the order the Details
-     * expander uses, so a log entry and an error dialog read the same way. A field nothing observed
-     * is left out rather than shown as empty — "certificate offered: none" would be a third answer
-     * to a question that has two.
-     */
-    private fun logDetailLines(entry: SyncLog.Entry): List<String> = buildList {
-        entry.summary.takeIf { it.isNotEmpty() }?.let { add(it) }
-        entry.httpStatus?.let { add(getString(R.string.details_status, it.toString())) }
-        entry.firstBodyLine?.let { add(getString(R.string.details_body, it)) }
-        entry.certificateOffered?.let { offered ->
-            add(
-                getString(
-                    R.string.details_certificate,
-                    getString(if (offered) R.string.value_yes else R.string.value_no),
-                ),
-            )
-        }
-        entry.method?.let { add(getString(R.string.details_method, it)) }
-        entry.errorClass?.let { add(getString(R.string.details_class, it.name)) }
-        entry.davCondition?.let { add(getString(R.string.details_condition, it)) }
-        val written = entry.written
-        val deleted = entry.deleted
-        if (written != null && deleted != null) add(getString(R.string.log_counts, written, deleted))
-        if (entry.unchanged == true) add(getString(R.string.log_unchanged))
-    }
-
-    /** Errors in the theme's error colour, warnings in its accent, the rest muted. */
-    private fun logLevelColor(anchor: TextView, level: SyncLog.Level): Int {
-        val muted = ContextCompat.getColor(this, android.R.color.darker_gray)
-        return when (level) {
-            SyncLog.Level.ERROR ->
-                MaterialColors.getColor(anchor, com.google.android.material.R.attr.colorError, muted)
-            SyncLog.Level.WARN ->
-                MaterialColors.getColor(anchor, com.google.android.material.R.attr.colorTertiary, muted)
-            SyncLog.Level.INFO ->
-                MaterialColors.getColor(anchor, com.google.android.material.R.attr.colorOnSurfaceVariant, muted)
-        }
-    }
-
-    private fun logTimestamp(at: Instant): String =
-        LOG_TIMESTAMP.format(at.atZone(ZoneId.systemDefault()))
-
-    private fun logAuthorityLabel(authority: String): String = when (authority) {
-        ContactsContract.AUTHORITY -> getString(R.string.log_authority_contacts)
-        CalendarContract.AUTHORITY -> getString(R.string.log_authority_calendar)
-        else -> authority
-    }
-
-    /** Null when nothing is filtered, so an unfiltered view says nothing about filtering. */
-    private fun logFilterDescription(level: SyncLog.Level?, account: String?): String? = listOfNotNull(
-        level?.let { getString(R.string.log_filter_level, it.name) },
-        account?.let { getString(R.string.log_filter_account, it) },
-    ).takeIf { it.isNotEmpty() }?.joinToString(" \u00b7 ")
-
-    private fun logFilterAdapter(labels: List<String>): ArrayAdapter<String> =
-        ArrayAdapter(this, android.R.layout.simple_spinner_item, labels).apply {
-            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        }
-
-    private fun logFilterListener(onChange: () -> Unit) = object : AdapterView.OnItemSelectedListener {
-        override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) = onChange()
-
-        override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-    }
-
-    private fun shareLog(text: String) {
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, getString(R.string.log_title))
-            putExtra(Intent.EXTRA_TEXT, text)
-        }
-        startActivity(Intent.createChooser(intent, getString(R.string.share)))
-    }
-
-    private fun clearLog() {
-        executor.execute {
-            SyncLog(this).clear()
-            main.post { if (isActive()) refresh() }
-        }
-    }
-
     // ------------------------------------------------------------ plumbing
 
     private fun selectionWriter(): CollectionSelectionWriter =
@@ -1015,8 +819,5 @@ class SettingsActivity : AppCompatActivity() {
     private companion object {
         const val WEBDAV_MULTI_STATUS = 207
         const val MIN_PASSPHRASE = 8
-
-        /** Sortable and unambiguous in the device's own zone, which is the zone the user reads it in. */
-        val LOG_TIMESTAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.US)
     }
 }

@@ -3,7 +3,27 @@
 An Android CalDAV/CardDAV sync provider that can attach **arbitrary HTTP headers**
 and/or a **client certificate** per account.
 
-Status: **idea only.** Nothing is built and nothing is decided beyond the notes below.
+Status: **working prototype.** It syncs. An account configured with only a client
+certificate pulled **368 contacts** from a real CalDAV server behind a
+certificate-gated proxy into the Android contacts provider, with no VPN and no
+custom headers.
+
+The design is specified in [`docs/spec/v1.md`](docs/spec/v1.md); that document is
+the reference for what the code is meant to do. What is built:
+
+- Per-account custom HTTP headers on every request, and client certificates from
+  either the Android KeyChain or an imported PKCS#12 archive
+- Contacts and calendar sync through the platform sync adapter, with collection
+  discovery, CTag/ETag change detection and batched multiget
+- **Read-only**: the server is the source of truth; phone-side edits are not pushed
+- An error taxonomy that names what actually failed — the HTTP status, the first
+  line of the response body, and whether a client certificate was offered — rather
+  than reporting every failure as "no DAV services found"
+- A terminal-styled log of recent runs, with search, filters and share
+
+Not yet exercised: the calendar path against real data, and repeat-sync
+idempotence. Two-way sync, tasks and scheduling beyond a fixed interval are out of
+scope, with reasons recorded on the issues.
 
 ## Why
 
@@ -47,14 +67,17 @@ contacts apps see the data with no changes:
 ## Approach
 
 A standalone app, not a fork or patch of an existing client — a fork means tracking
-upstream forever. The protocol layer is intended to come from
-[`dav4jvm`](https://github.com/bitfireAT/dav4jvm), with a hand-rolled OkHttp client as
-the fallback if it proves awkward to consume standalone.
+upstream forever. The protocol layer comes from
+[`dav4jvm`](https://github.com/bitfireAT/dav4jvm), which supplies request construction
+and XML parsing but **no sync algorithm**; the engine, the change detection and the
+provider writes are this project's own.
 
-Open question to settle before any app work: whether an identity-aware proxy actually
+The open question this repo was built to answer — whether an identity-aware proxy
 honours service-token headers on `PROPFIND` and `REPORT`, not just on the methods it
-recognises. If it does not, the headers feature is pointless and only the clearer
-mTLS handling justifies the project.
+recognises — is **settled: yes**. A service token authorises `PROPFIND`, `REPORT`,
+`PUT`, `DELETE` and `OPTIONS`, while a deliberately wrong token is redirected to the
+proxy's login page, so the passes are attributable to the credential rather than to
+the proxy ignoring unfamiliar methods.
 
 ## Repo conventions
 

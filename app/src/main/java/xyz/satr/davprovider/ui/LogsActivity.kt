@@ -17,6 +17,7 @@ import android.widget.EditText
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.appbar.MaterialToolbar
@@ -33,9 +34,9 @@ import xyz.satr.davprovider.R
  * the two kinds — are controls that are always visible; and the file is read once, off the main
  * thread, never per keystroke.
  *
- * Nothing here is a second opinion about the file: the entries, their wording and their level
- * colours are the same ones the dialog showed, and what Share hands over is still the filtered view
- * — a reader who narrowed to one Account's errors is handing over exactly the question they asked.
+ * Nothing here is a second opinion about the file: the entries and the words in them are the ones the
+ * dialog showed, and what Share hands over is still the filtered view — a reader who narrowed to one
+ * Account's errors is handing over exactly the question they asked.
  */
 class LogsActivity : AppCompatActivity() {
 
@@ -88,6 +89,14 @@ class LogsActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_logs)
+
+        // The screen is dark, so the system bars over it have to draw light icons: this Activity's
+        // theme is a light one, and its dark icons would disappear into the terminal. The setting
+        // belongs to this window, so the screens that come after it are unaffected.
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
 
         setSupportActionBar(findViewById<MaterialToolbar>(R.id.log_toolbar))
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
@@ -353,9 +362,17 @@ class LogsActivity : AppCompatActivity() {
         startActivity(Intent.createChooser(intent, getString(R.string.share)))
     }
 
+    /**
+     * The values a filter offers.
+     *
+     * They are inflated from this screen's own item layout, which pins their colour to the
+     * terminal's palette: an [ArrayAdapter] inflates with the Activity's theme and not with the dark
+     * overlay the screen's views are styled in, so a colour inherited here would be dark text on a
+     * dark field.
+     */
     private fun labels(items: List<String>): ArrayAdapter<String> =
-        ArrayAdapter(this, android.R.layout.simple_spinner_item, items).apply {
-            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        ArrayAdapter(this, R.layout.item_log_filter, items).apply {
+            setDropDownViewResource(R.layout.item_log_filter)
         }
 
     private fun selected(onChange: () -> Unit) = object : AdapterView.OnItemSelectedListener {

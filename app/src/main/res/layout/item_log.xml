@@ -1,23 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  One entry: its headline, then the facts under it. Monospace, as the dialog's text was, because
-  these are lines out of a file and columns that line up are how they are compared; selectable,
-  because the reader's next move is usually to paste one somewhere.
+  One entry as two lines of terminal output: its columns, then the facts that did not fit in them.
+
+  Monospace, because these are lines out of a file and columns that line up are how they are
+  compared; selectable, because the reader's next move is usually to paste one somewhere.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
+    android:background="@color/term_bg"
     android:orientation="vertical"
-    android:paddingStart="16dp"
-    android:paddingTop="10dp"
-    android:paddingEnd="16dp"
-    android:paddingBottom="10dp">
+    android:paddingStart="14dp"
+    android:paddingTop="6dp"
+    android:paddingEnd="14dp"
+    android:paddingBottom="6dp">
 
+    <!-- The timestamp lands in its own column and the level in the next one; the indentation of the
+         facts below is measured from this line's own font, since that is what defines the columns. -->
     <TextView
         android:id="@+id/log_head"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:fontFamily="monospace"
+        android:textColor="@color/term_text"
         android:textIsSelectable="true"
         android:textSize="12sp" />
 
@@ -27,7 +32,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="2dp"
         android:fontFamily="monospace"
-        android:paddingStart="16dp"
+        android:textColor="@color/term_dim"
         android:textIsSelectable="true"
         android:textSize="12sp" />
 

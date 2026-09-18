@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The subtree the Logs screen's chrome is styled in.
+
+      The screen is a dark terminal, and a light Material control drawn on it is the one thing that
+      makes a deliberate surface look like a mistake, so the whole screen is themed dark and the
+      controls take their colours from here. It is an overlay applied to the layout's root rather
+      than a set of attributes per control because the parts a control paints itself — the text
+      cursor, the focused box stroke, a spinner's arrow, the overflow icon — read their colour from
+      the theme and cannot be reached from the layout at all.
+    -->
+    <style name="Theme.DavProvider.Terminal" parent="ThemeOverlay.AppCompat.Dark">
+
+        <!-- The accent is plain output text: the search field's cursor and focused stroke, and the
+             outlined button's label, are the same colour as the lines they filter. -->
+        <item name="colorPrimary">@color/term_text</item>
+        <item name="colorOnPrimary">@color/term_bg</item>
+        <item name="colorControlNormal">@color/term_text</item>
+        <item name="colorControlActivated">@color/term_text</item>
+        <item name="colorControlHighlight">@color/term_border</item>
+
+        <item name="colorSurface">@color/term_bg</item>
+        <item name="colorOnSurface">@color/term_text</item>
+        <item name="colorSurfaceVariant">@color/term_bar</item>
+        <item name="colorOnSurfaceVariant">@color/term_dim</item>
+        <item name="colorOutline">@color/term_border</item>
+
+        <!-- An unreadable log is the one thing on this screen that is an error, so it keeps the
+             error colour; the level designators carry their own colours from the layout. -->
+        <item name="colorError">@color/level_error</item>
+        <item name="colorOnError">@color/term_bg</item>
+
+        <item name="android:textColorPrimary">@color/term_text</item>
+        <item name="android:textColorSecondary">@color/term_dim</item>
+        <item name="android:textColorHint">@color/term_dim</item>
+
+    </style>
+</resources>

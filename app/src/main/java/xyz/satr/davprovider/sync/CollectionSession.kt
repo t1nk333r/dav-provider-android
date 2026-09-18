@@ -37,6 +37,8 @@ private val UNSUPPORTED_REPORT_STATUS = setOf(405, 501)
 internal class CollectionSession(
     private val http: HttpClient,
     private val collection: DavCollection,
+    /** Called before each DAV operation, so evidence never outlives the request that produced it. */
+    private val onOperationStart: () -> Unit = {},
 ) {
 
     private var location: Url = Url(collection.url)
@@ -47,6 +49,7 @@ internal class CollectionSession(
 
     /** §6 step 1: the cheap check. Returns the Collection's CTag, or null when it has none. */
     suspend fun ctag(): String? {
+        onOperationStart()
         val resource = newResource()
         lastMethod = "PROPFIND"
 
@@ -69,6 +72,7 @@ internal class CollectionSession(
      */
     suspend fun members(): Members {
         val members = Members()
+        onOperationStart()
         val resource = newResource()
         lastMethod = "PROPFIND"
 
@@ -89,6 +93,7 @@ internal class CollectionSession(
      * for every other failure — those are the Collection's failure, not a licence to try again.
      */
     suspend fun reportChanges(syncToken: String?): Report? {
+        onOperationStart()
         val members = Members()
         var token: String? = null
         val resource = newResource()
@@ -124,6 +129,7 @@ internal class CollectionSession(
      */
     suspend fun multiget(hrefs: List<Url>): Map<String, String> {
         val bodies = LinkedHashMap<String, String>()
+        onOperationStart()
         val resource = newResource()
         lastMethod = "REPORT"
 

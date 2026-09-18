@@ -150,7 +150,7 @@ class SyncEngine(
     ): CollectionOutcome {
         val startedAt = clock()
         val state = mapper.readState(account, collection)
-        val session = CollectionSession(http.client, collection)
+        val session = CollectionSession(http.client, collection, http::startOperation)
         val errors = errorMapping(davAccount, http)
 
         return try {

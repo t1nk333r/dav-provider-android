@@ -55,6 +55,21 @@ internal class DavHttpSession(
     /** Read live: a handshake later in the run is what answers "was a certificate offered". */
     val certificateOffered: Boolean get() = davHttpClient.certificateOffered
 
+    /**
+     * Starts one DAV operation.
+     *
+     * Evidence belongs to the operation that produced it: without this, a request that was never
+     * answered would be described by the response of the request before it — a 207 from the listing
+     * would turn a dropped connection into a parse failure, which is not retryable, and a redirect
+     * seen earlier in the run would keep answering for every later failure.
+     *
+     * A dav4jvm operation is one flow collection even when it follows redirects, so this is called
+     * once per operation and not per HTTP hop: within an operation the redirect must survive.
+     */
+    fun startOperation() {
+        recorder.reset()
+    }
+
     fun close() {
         client.close()
     }

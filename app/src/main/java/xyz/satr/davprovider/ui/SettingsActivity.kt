@@ -91,6 +91,19 @@ class SettingsActivity : AppCompatActivity() {
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* the answer is the user's */ }
 
+    /**
+     * The provider permissions are *dangerous* ones: declaring them in the manifest grants nothing.
+     * Without them every sync dies opening the contacts or calendar provider with a `databaseError`
+     * that the framework treats as a hard error and therefore never retries.
+     *
+     * That is exactly what happened — the app registered both sync adapters correctly and then
+     * failed every run at the provider, with nothing in the log, because the failure precedes any
+     * HTTP work and the reporter is only reached at the end of a run. Ask as soon as an Account
+     * exists, not at first launch: the request only means something next to what needs it.
+     */
+    private val providerPermissions =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { /* the answer is the user's */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
@@ -137,10 +150,23 @@ class SettingsActivity : AppCompatActivity() {
         val certificate: String?,
     )
 
+    private var askedProviderPermissions = false
+
     private fun refresh() {
         executor.execute {
             val screens = readAccounts()
-            main.post { if (isActive()) populate(screens) }
+            main.post {
+                if (!isActive()) return@post
+                populate(screens)
+                // Automatic runs have no gesture to hang this question on, so ask as soon as a
+                // configured Account exists — otherwise the framework fires a periodic sync that
+                // fails unretryably at the provider and nobody ever sees why. Once per visit, so
+                // declining is not punished with a dialog on every refresh.
+                if (screens.isNotEmpty() && !askedProviderPermissions) {
+                    askedProviderPermissions = true
+                    requestProviderPermissionsIfNeeded()
+                }
+            }
         }
     }
 
@@ -284,6 +310,9 @@ class SettingsActivity : AppCompatActivity() {
         // The moment the user starts a sync is the moment an answer about failure notifications
         // means something; asking at first launch would mean nothing.
         requestNotificationPermissionIfNeeded()
+        // A sync without these cannot open either provider, so asking here is what turns a hard
+        // failure the framework will not retry into one question.
+        requestProviderPermissionsIfNeeded()
         SyncScheduler.syncNow(account)
         showMessage(getString(R.string.sync_requested))
     }
@@ -724,6 +753,40 @@ class SettingsActivity : AppCompatActivity() {
                 notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
             .setNegativeButton(R.string.notifications_later, null)
+            .show()
+    }
+
+    // ------------------------------------------------------------ provider permissions
+
+    private val providerPermissionNames = arrayOf(
+        Manifest.permission.READ_CONTACTS,
+        Manifest.permission.WRITE_CONTACTS,
+        Manifest.permission.READ_CALENDAR,
+        Manifest.permission.WRITE_CALENDAR,
+    )
+
+    private fun missingProviderPermissions(): List<String> = providerPermissionNames.filter {
+        ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+    }
+
+    /**
+     * Asked before a sync rather than at launch, for the same reason as the notification question:
+     * it only means something next to the action that needs it.
+     *
+     * The rationale is shown because these are ordinary personal-data permissions a user is right
+     * to refuse — but refusing them means the app cannot work at all, and a silent failure would be
+     * the worst of the three outcomes.
+     */
+    private fun requestProviderPermissionsIfNeeded() {
+        val missing = missingProviderPermissions()
+        if (missing.isEmpty()) return
+        AlertDialog.Builder(this)
+            .setTitle(R.string.provider_permissions_title)
+            .setMessage(R.string.provider_permissions_message)
+            .setPositiveButton(R.string.provider_permissions_allow) { _, _ ->
+                providerPermissions.launch(missing.toTypedArray())
+            }
+            .setNegativeButton(R.string.provider_permissions_later, null)
             .show()
     }
 

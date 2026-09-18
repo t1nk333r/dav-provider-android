@@ -190,4 +190,10 @@
     <string name="notifications_allow">Allow</string>
     <string name="notifications_later">Not now</string>
 
+    <!-- Provider permissions -->
+    <string name="provider_permissions_title">Contacts and calendar access</string>
+    <string name="provider_permissions_message">Syncing needs permission to read and write contacts and calendars. Declaring it in the manifest is not enough on modern Android: without the grant, every sync fails before it reaches the server, and Android will not retry it.</string>
+    <string name="provider_permissions_allow">Grant access</string>
+    <string name="provider_permissions_later">Not now</string>
+
 </resources>

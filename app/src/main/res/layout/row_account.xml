@@ -35,6 +35,12 @@
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:visibility="gone" />
 
+        <CheckBox
+            android:id="@+id/account_unmetered_only"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/sync_only_unmetered" />
+
         <LinearLayout
             android:id="@+id/account_wifi"
             android:layout_width="match_parent"

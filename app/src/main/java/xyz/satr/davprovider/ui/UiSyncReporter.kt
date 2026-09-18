@@ -10,11 +10,14 @@ import xyz.satr.davprovider.sync.SyncReporter
 import xyz.satr.davprovider.sync.SyncWiring
 
 /**
- * Records what a run did: the per-Collection status the account screen reads, one line per attempt
- * in the ring-buffer log, and a notification when the failure is one that needs the user.
+ * Records what a run did: the per-Collection status the account screen reads, one entry per
+ * Collection and one for the run in the ring-buffer log, and a notification when the failure is one
+ * that needs the user.
  *
  * The engine hands over the whole run at once, so nothing here decides severity — the engine
- * knows which classes are terminal and whether it stopped early. This only translates.
+ * knows which classes are terminal and whether it stopped early. This only translates, which is why
+ * a Collection that reported the informational class 3 is logged as information rather than as the
+ * failure its error object could look like.
  */
 internal class UiSyncReporter(context: Context) : SyncReporter {
 
@@ -44,32 +47,40 @@ internal class UiSyncReporter(context: Context) : SyncReporter {
                 account = report.account.name,
                 collectionId = outcome.collectionId,
                 summary = outcome.error?.summary
-                    ?: appContext.getString(R.string.log_collection_ok, outcome.written, outcome.deleted),
+                    ?: appContext.getString(R.string.log_collection_ok),
                 errorClass = outcome.error?.errorClass,
                 httpStatus = outcome.error?.httpStatus,
                 method = outcome.error?.requestMethod,
+                // §5: class 3 is the server talking, not the Collection failing.
+                level = if (outcome.failed) SyncLog.Level.ERROR else SyncLog.Level.INFO,
+                authority = report.authority,
+                displayName = outcome.displayName,
+                // The classifier observed the handshake on every exchange it read, including the
+                // ones that ended well, so this is recorded wherever it exists and never guessed.
+                certificateOffered = outcome.error?.certificateOffered,
+                written = outcome.written,
+                deleted = outcome.deleted,
+                unchanged = outcome.unchanged,
+                firstBodyLine = outcome.error?.firstBodyLine,
+                davCondition = outcome.error?.davCondition,
             )
         }
-        report.error?.let { error ->
-            log.append(
-                account = report.account.name,
-                collectionId = null,
-                summary = error.summary,
-                errorClass = error.errorClass,
-                httpStatus = error.httpStatus,
-                method = error.requestMethod,
-            )
-        }
-        if (report.collections.isEmpty() && report.error == null) {
-            log.append(
-                account = report.account.name,
-                collectionId = null,
-                summary = appContext.getString(R.string.log_no_collections),
-                errorClass = null,
-                httpStatus = null,
-                method = null,
-            )
-        }
+        // Exactly one run-level entry, so "did this run sync anything" is one line to read.
+        log.append(
+            account = report.account.name,
+            collectionId = null,
+            summary = logRunSummary(report),
+            errorClass = report.error?.errorClass,
+            httpStatus = report.error?.httpStatus,
+            method = report.error?.requestMethod,
+            level = logRunLevel(report),
+            authority = report.authority,
+            certificateOffered = report.error?.certificateOffered,
+            written = report.collections.sumOf { it.written },
+            deleted = report.collections.sumOf { it.deleted },
+            firstBodyLine = report.error?.firstBodyLine,
+            davCondition = report.error?.davCondition,
+        )
     }
 
     /** §5 class 3 is information: it must not mark a Collection failed nor contribute to Partial. */
@@ -89,6 +100,36 @@ internal class UiSyncReporter(context: Context) : SyncReporter {
         report.error != null -> report.error.summary
         report.aborted -> appContext.getString(R.string.log_run_aborted)
         else -> null
+    }
+
+    /**
+     * A run that failed is an error; a run that only partly worked is something to notice. Class 3
+     * never lands here as a failure — the engine keeps it out of Partial.
+     */
+    private fun logRunLevel(report: AccountSyncReport): SyncLog.Level = when {
+        report.error != null || report.status == AccountSyncStatus.FAILED -> SyncLog.Level.ERROR
+        report.status == AccountSyncStatus.PARTIAL -> SyncLog.Level.WARN
+        else -> SyncLog.Level.INFO
+    }
+
+    /**
+     * The log's run line, which unlike [runSummary] says something even when the run went well: a
+     * ring buffer is read after the fact, and "ok" is an answer, whereas a missing line is not.
+     */
+    private fun logRunSummary(report: AccountSyncReport): String = when {
+        report.error != null -> report.error.summary
+        report.aborted -> appContext.getString(R.string.log_run_aborted)
+        report.collections.isEmpty() -> appContext.getString(R.string.log_no_collections)
+        report.status == AccountSyncStatus.PARTIAL -> appContext.getString(
+            R.string.status_detail_partial,
+            report.collections.count { it.failed },
+            report.collections.size,
+        )
+        report.status == AccountSyncStatus.FAILED -> appContext.getString(
+            R.string.status_detail_failed,
+            report.collections.size,
+        )
+        else -> appContext.getString(R.string.log_collection_ok)
     }
 }
 

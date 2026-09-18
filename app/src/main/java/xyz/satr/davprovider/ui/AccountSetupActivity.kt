@@ -37,6 +37,7 @@ import xyz.satr.davprovider.core.CredentialsUnreadableException
 import xyz.satr.davprovider.core.DavAccount
 import xyz.satr.davprovider.core.DavHeader
 import xyz.satr.davprovider.error.credentialsUnreadable
+import xyz.satr.davprovider.sync.SyncScheduler
 
 /**
  * Creating one Account: its base URL, the headers and client certificate that authenticate it,
@@ -639,6 +640,10 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
                 return@execute
             }
             davAccount = installCertificate(store, certificates, account, davAccount, prior)
+            // §8: a new Account is scheduled from here, and a new Account that arrives with nothing
+            // selected is left unscheduled — a periodic job with nothing to sync is a wakeup for a
+            // question nobody asked, and selecting a Collection is what enables the schedule.
+            SyncScheduler.applySelection(account, davAccount.collections)
             main.post { if (isActive()) onStored(davAccount) }
             // The check is a report, not a condition: the account is already saved either way.
             val outcome = DavProbe.propfind(

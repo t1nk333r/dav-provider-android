@@ -8,8 +8,6 @@ import android.content.Intent
 import android.content.SyncStatusObserver
 import android.content.pm.PackageManager
 import android.graphics.Typeface
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -17,19 +15,31 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.CalendarContract
 import android.provider.ContactsContract
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
 import android.view.LayoutInflater
 import android.view.View
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.google.android.material.color.MaterialColors
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import java.util.concurrent.Executors
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import xyz.satr.davprovider.R
@@ -41,6 +51,8 @@ import xyz.satr.davprovider.core.DavAccount
 import xyz.satr.davprovider.core.DavCollection
 import xyz.satr.davprovider.core.SyncError
 import xyz.satr.davprovider.error.credentialsUnreadable
+import xyz.satr.davprovider.sync.SyncPreferences
+import xyz.satr.davprovider.sync.SyncScheduler
 
 /**
  * The launcher, and the per-Account screen the platform opens from an account's sync settings.
@@ -209,8 +221,17 @@ class SettingsActivity : AppCompatActivity() {
             if (screen.davAccount.collections.isEmpty()) View.VISIBLE else View.GONE
         screen.davAccount.collections.forEach { collections.addView(collectionRow(screen, it, collections)) }
 
+        // §8: the waiting state is what a deferred run recorded, never inferred from the network:
+        // a queued sync on a metered network may be waiting for something else entirely, and the
+        // user needs the state that actually happened.
         card.findViewById<LinearLayout>(R.id.account_wifi).visibility =
-            if (isWaitingForWifi(screen.account)) View.VISIBLE else View.GONE
+            if (screen.report?.deferred == true) View.VISIBLE else View.GONE
+
+        val unmeteredOnly = card.findViewById<CheckBox>(R.id.account_unmetered_only)
+        unmeteredOnly.isChecked = SyncPreferences(this).unmeteredOnly(screen.account)
+        // Listener last: re-rendering must not look like the user toggled something.
+        unmeteredOnly.setOnCheckedChangeListener { _, checked -> writeUnmeteredOnly(screen, checked) }
+
         card.findViewById<Button>(R.id.account_sync_now).setOnClickListener { requestManualSync(screen.account) }
         card.findViewById<Button>(R.id.account_sync_anyway).setOnClickListener { requestManualSync(screen.account) }
 
@@ -263,29 +284,8 @@ class SettingsActivity : AppCompatActivity() {
         // The moment the user starts a sync is the moment an answer about failure notifications
         // means something; asking at first launch would mean nothing.
         requestNotificationPermissionIfNeeded()
-        val extras = Bundle().apply {
-            putBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, true)
-            putBoolean(ContentResolver.SYNC_EXTRAS_EXPEDITED, true)
-            putBoolean(ContentResolver.SYNC_EXTRAS_IGNORE_BACKOFF, true)
-            putBoolean(ContentResolver.SYNC_EXTRAS_IGNORE_SETTINGS, true)
-        }
-        AUTHORITIES.forEach { authority ->
-            ContentResolver.setIsSyncable(account, authority, 1)
-            ContentResolver.requestSync(account, authority, extras)
-        }
+        SyncScheduler.syncNow(account)
         showMessage(getString(R.string.sync_requested))
-    }
-
-    /**
-     * The app enforces unmetered-only itself, since the platform has no API for it, so the waiting
-     * state is inferred: a sync is queued and the network in use is metered.
-     */
-    private fun isWaitingForWifi(account: Account): Boolean {
-        if (AUTHORITIES.none { ContentResolver.isSyncPending(account, it) }) return false
-        val manager = getSystemService(ConnectivityManager::class.java) ?: return false
-        val network = manager.activeNetwork ?: return false
-        val capabilities = manager.getNetworkCapabilities(network) ?: return false
-        return !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
     }
 
     private fun writeSelection(screen: AccountScreen, collection: DavCollection, selected: Boolean) {
@@ -299,7 +299,26 @@ class SettingsActivity : AppCompatActivity() {
                 main.post { if (isActive()) { showMessage(getString(R.string.save_failed, e.javaClass.simpleName)); refresh() } }
                 return@execute
             }
+            // §8: the schedule follows the selection, and it follows it here because this screen is
+            // where an Account first comes to have something to sync.
+            SyncScheduler.applySelection(screen.account, updated)
             main.post { if (isActive()) refresh() }
+        }
+    }
+
+    /**
+     * §8's unmetered-only setting, written where the sync engine reads it.
+     *
+     * Nothing on the card changes with it: whether a run is waiting is what that run recorded, not
+     * what this toggle says, and re-rendering here would only redraw the same state.
+     */
+    private fun writeUnmeteredOnly(screen: AccountScreen, enabled: Boolean) {
+        executor.execute {
+            try {
+                SyncPreferences(this).setUnmeteredOnly(screen.account, enabled)
+            } catch (e: Exception) {
+                main.post { if (isActive()) { showMessage(getString(R.string.save_failed, e.javaClass.simpleName)); refresh() } }
+            }
         }
     }
 
@@ -310,6 +329,18 @@ class SettingsActivity : AppCompatActivity() {
                 factory = UiDependencies.httpClientFactory(this),
                 classifier = UiDependencies.errorClassifier(),
                 davAccount = loaded,
+            )
+            // §8: the walk is a sequence, and a sequence shown once in a dialog is gone the moment
+            // it closes. WARN rather than INFO when it did not run to the end or found nothing —
+            // those are the two outcomes someone comes back to the log to understand.
+            SyncLog(this).appendDiscovery(
+                account = loaded.label,
+                level = if (outcome.completed && outcome.collections.isNotEmpty()) {
+                    SyncLog.Level.INFO
+                } else {
+                    SyncLog.Level.WARN
+                },
+                notes = outcome.notes,
             )
             if (!outcome.completed) {
                 // §8: every attempt is surfaced with its outcome, including the ones that failed —
@@ -326,6 +357,9 @@ class SettingsActivity : AppCompatActivity() {
                 main.post { if (isActive()) showMessage(getString(R.string.save_failed, e.javaClass.simpleName)) }
                 return@execute
             }
+            // A Collection discovered here arrives unselected, so this usually keeps a selection's
+            // schedule as it was; an Account that had none is left unscheduled until one is chosen.
+            SyncScheduler.applySelection(screen.account, merged)
             val added = merged.size - screen.davAccount.collections.size
             main.post {
                 if (!isActive()) return@post
@@ -398,6 +432,9 @@ class SettingsActivity : AppCompatActivity() {
                 main.post { if (isActive()) showMessage(getString(R.string.save_failed, e.javaClass.simpleName)) }
                 return@execute
             }
+            // Re-adding a selected URL keeps the schedule it had; a new one is unselected and does
+            // not start one.
+            SyncScheduler.applySelection(screen.account, updated)
             val name = collectionTitle(collection)
             main.post { if (isActive()) { showMessage(getString(R.string.collection_added, name)); refresh() } }
         }
@@ -473,6 +510,10 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun remove(screen: AccountScreen) {
         executor.execute {
+            // While the Account still exists, because the schedule is the framework's and is keyed
+            // by the Account's name and type: a periodic job left behind would wake the device to
+            // sync an Account nothing resolves.
+            SyncScheduler.cancel(screen.account)
             try {
                 UiDependencies.accountStore(this).delete(screen.account)
             } catch (e: Exception) {
@@ -693,25 +734,172 @@ class SettingsActivity : AppCompatActivity() {
             val entries = SyncLog(this).read()
             main.post {
                 if (!isActive()) return@post
-                val view = layoutInflater.inflate(R.layout.dialog_log, null)
-                view.findViewById<TextView>(R.id.log_text).text =
-                    if (entries.isEmpty()) getString(R.string.log_empty) else entries.joinToString("\n")
-                AlertDialog.Builder(this)
-                    .setTitle(R.string.log_title)
-                    .setView(view)
-                    .setPositiveButton(R.string.share) { _, _ -> shareLog(entries) }
-                    .setNeutralButton(R.string.clear) { _, _ -> clearLog() }
-                    .setNegativeButton(R.string.close, null)
-                    .show()
+                showLogDialog(entries)
             }
         }
     }
 
-    private fun shareLog(entries: List<String>) {
+    /**
+     * The ring buffer, one entry per block, narrowed by level and by Account.
+     *
+     * The levels are the first thing on every line and the only thing that is coloured, because a
+     * hundred entries are read by scanning for the red one. Share exports the view rather than the
+     * file: a reader who filtered to one Account's errors is handing over exactly the question they
+     * were asking.
+     */
+    private fun showLogDialog(entries: List<SyncLog.Entry>) {
+        val view = layoutInflater.inflate(R.layout.dialog_log, null)
+        val levelFilter = view.findViewById<Spinner>(R.id.log_level_filter)
+        val accountFilter = view.findViewById<Spinner>(R.id.log_account_filter)
+        val text = view.findViewById<TextView>(R.id.log_text)
+
+        val levels: List<SyncLog.Level?> = listOf(null) + SyncLog.Level.entries
+        val accounts: List<String?> = listOf(null) + entries.mapNotNull { it.account }.distinct()
+        levelFilter.adapter = logFilterAdapter(levels.map { it?.name ?: getString(R.string.log_level_all) })
+        accountFilter.adapter = logFilterAdapter(accounts.map { it ?: getString(R.string.log_account_all) })
+
+        var visible: CharSequence = ""
+        fun render() {
+            val level = levels.getOrNull(levelFilter.selectedItemPosition)
+            val account = accounts.getOrNull(accountFilter.selectedItemPosition)
+            val shown = entries.filter {
+                (level == null || it.level == level) && (account == null || it.account == account)
+            }
+            visible = logText(shown, logFilterDescription(level, account), entries.isEmpty(), text)
+            text.text = visible
+        }
+        levelFilter.onItemSelectedListener = logFilterListener { render() }
+        accountFilter.onItemSelectedListener = logFilterListener { render() }
+        render()
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.log_title)
+            .setView(view)
+            .setPositiveButton(R.string.share) { _, _ -> shareLog(visible.toString()) }
+            .setNeutralButton(R.string.clear) { _, _ -> clearLog() }
+            .setNegativeButton(R.string.close, null)
+            .show()
+    }
+
+    /** What the viewer shows and what Share hands over, rendered by the same code. */
+    private fun logText(
+        shown: List<SyncLog.Entry>,
+        filter: String?,
+        nothingRecorded: Boolean,
+        anchor: TextView,
+    ): CharSequence {
+        if (nothingRecorded) return getString(R.string.log_empty)
+        if (shown.isEmpty()) return getString(R.string.log_filter_empty)
+        val text = SpannableStringBuilder()
+        filter?.let { text.append(getString(R.string.log_showing, it)).append("\n\n") }
+        shown.forEachIndexed { index, entry ->
+            if (index > 0) text.append("\n\n")
+            text.append(logHead(entry, anchor))
+            logDetailLines(entry).forEach { text.append("\n    ").append(it) }
+        }
+        return text
+    }
+
+    private fun logHead(entry: SyncLog.Entry, anchor: TextView): CharSequence {
+        val head = SpannableStringBuilder()
+        val start = head.length
+        head.append(entry.level.name)
+        head.setSpan(StyleSpan(Typeface.BOLD), start, head.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        head.setSpan(
+            ForegroundColorSpan(logLevelColor(anchor, entry.level)),
+            start,
+            head.length,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+        head.append("  ").append(
+            listOfNotNull(
+                entry.at?.let { logTimestamp(it) },
+                getString(
+                    when (entry.kind) {
+                        SyncLog.Kind.SYNC -> R.string.log_kind_sync
+                        SyncLog.Kind.DISCOVERY -> R.string.log_kind_discovery
+                        SyncLog.Kind.UNPARSED -> R.string.log_kind_unparsed
+                    },
+                ),
+                entry.account,
+                entry.authority?.let { logAuthorityLabel(it) },
+                entry.displayName ?: entry.collectionId,
+            ).joinToString(" \u00b7 "),
+        )
+        return head
+    }
+
+    /**
+     * The facts under the level: the summary first, then the evidence in the order the Details
+     * expander uses, so a log entry and an error dialog read the same way. A field nothing observed
+     * is left out rather than shown as empty — "certificate offered: none" would be a third answer
+     * to a question that has two.
+     */
+    private fun logDetailLines(entry: SyncLog.Entry): List<String> = buildList {
+        entry.summary.takeIf { it.isNotEmpty() }?.let { add(it) }
+        entry.httpStatus?.let { add(getString(R.string.details_status, it.toString())) }
+        entry.firstBodyLine?.let { add(getString(R.string.details_body, it)) }
+        entry.certificateOffered?.let { offered ->
+            add(
+                getString(
+                    R.string.details_certificate,
+                    getString(if (offered) R.string.value_yes else R.string.value_no),
+                ),
+            )
+        }
+        entry.method?.let { add(getString(R.string.details_method, it)) }
+        entry.errorClass?.let { add(getString(R.string.details_class, it.name)) }
+        entry.davCondition?.let { add(getString(R.string.details_condition, it)) }
+        val written = entry.written
+        val deleted = entry.deleted
+        if (written != null && deleted != null) add(getString(R.string.log_counts, written, deleted))
+        if (entry.unchanged == true) add(getString(R.string.log_unchanged))
+    }
+
+    /** Errors in the theme's error colour, warnings in its accent, the rest muted. */
+    private fun logLevelColor(anchor: TextView, level: SyncLog.Level): Int {
+        val muted = ContextCompat.getColor(this, android.R.color.darker_gray)
+        return when (level) {
+            SyncLog.Level.ERROR ->
+                MaterialColors.getColor(anchor, com.google.android.material.R.attr.colorError, muted)
+            SyncLog.Level.WARN ->
+                MaterialColors.getColor(anchor, com.google.android.material.R.attr.colorTertiary, muted)
+            SyncLog.Level.INFO ->
+                MaterialColors.getColor(anchor, com.google.android.material.R.attr.colorOnSurfaceVariant, muted)
+        }
+    }
+
+    private fun logTimestamp(at: Instant): String =
+        LOG_TIMESTAMP.format(at.atZone(ZoneId.systemDefault()))
+
+    private fun logAuthorityLabel(authority: String): String = when (authority) {
+        ContactsContract.AUTHORITY -> getString(R.string.log_authority_contacts)
+        CalendarContract.AUTHORITY -> getString(R.string.log_authority_calendar)
+        else -> authority
+    }
+
+    /** Null when nothing is filtered, so an unfiltered view says nothing about filtering. */
+    private fun logFilterDescription(level: SyncLog.Level?, account: String?): String? = listOfNotNull(
+        level?.let { getString(R.string.log_filter_level, it.name) },
+        account?.let { getString(R.string.log_filter_account, it) },
+    ).takeIf { it.isNotEmpty() }?.joinToString(" \u00b7 ")
+
+    private fun logFilterAdapter(labels: List<String>): ArrayAdapter<String> =
+        ArrayAdapter(this, android.R.layout.simple_spinner_item, labels).apply {
+            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        }
+
+    private fun logFilterListener(onChange: () -> Unit) = object : AdapterView.OnItemSelectedListener {
+        override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) = onChange()
+
+        override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+    }
+
+    private fun shareLog(text: String) {
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_SUBJECT, getString(R.string.log_title))
-            putExtra(Intent.EXTRA_TEXT, entries.joinToString("\n"))
+            putExtra(Intent.EXTRA_TEXT, text)
         }
         startActivity(Intent.createChooser(intent, getString(R.string.share)))
     }
@@ -762,8 +950,10 @@ class SettingsActivity : AppCompatActivity() {
     private fun isActive(): Boolean = !isFinishing && !isDestroyed
 
     private companion object {
-        val AUTHORITIES = listOf(ContactsContract.AUTHORITY, CalendarContract.AUTHORITY)
         const val WEBDAV_MULTI_STATUS = 207
         const val MIN_PASSPHRASE = 8
+
+        /** Sortable and unambiguous in the device's own zone, which is the zone the user reads it in. */
+        val LOG_TIMESTAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.US)
     }
 }

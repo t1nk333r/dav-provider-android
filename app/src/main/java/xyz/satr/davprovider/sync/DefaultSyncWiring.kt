@@ -9,6 +9,7 @@ import xyz.satr.davprovider.net.DavHttpClientFactoryImpl
 import xyz.satr.davprovider.provider.calendar.CalendarMapper
 import xyz.satr.davprovider.provider.contacts.ContactsMapper
 import xyz.satr.davprovider.store.AccountManagerAccountStore
+import xyz.satr.davprovider.ui.SyncStatusStore
 
 /**
  * The components the app actually runs, named once.
@@ -20,6 +21,10 @@ import xyz.satr.davprovider.store.AccountManagerAccountStore
  *
  * [reporter] belongs to the caller: a run produces a result, and where that result is kept is the
  * reader's business.
+ *
+ * The one exception is the deferral sink. A deferred run produces no result to report, and the state
+ * it does produce is part of the Account's status, so it goes to the store that already owns that
+ * userdata rather than through a second channel to the same screen.
  */
 internal fun defaultSyncEngineProvider(
     context: Context,
@@ -42,5 +47,8 @@ internal fun defaultSyncEngineProvider(
         httpClientFactory = DavHttpClientFactoryImpl(appContext),
         classifier = SyncErrorClassifierImpl(),
         reporter = reporter,
+        preferences = SyncPreferences(appContext),
+        deferrals = SyncStatusStore(appContext),
+        metering = ConnectivityManagerMetering(appContext),
     )
 }

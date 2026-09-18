@@ -13,6 +13,10 @@ import kotlinx.coroutines.runBlocking
  *
  * Scheduling, backing off and cancelling are the framework's, not this class's: a run is started
  * when asked and stopped when told, and nothing here retries.
+ *
+ * [extras] is handed to the engine unchanged because it is the only place a run can learn that the
+ * user started it: §8 lets a manual sync bypass the app's own constraints, and this call is where
+ * the framework's request becomes that run.
  */
 class DavSyncAdapter(
     context: Context,
@@ -52,7 +56,7 @@ class DavSyncAdapter(
         // must not outlive the run whose certificate state it reports.
         val engine = SyncWiring.requireProvider().create(appContext, authority)
         runBlocking {
-            engine.sync(account, syncResult) { cancelled }
+            engine.sync(account, extras, syncResult) { cancelled }
         }
     }
 

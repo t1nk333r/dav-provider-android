@@ -1,7 +1,9 @@
 package xyz.satr.davprovider.sync
 
 import android.accounts.Account
+import android.content.ContentResolver
 import android.content.SyncResult
+import android.os.Bundle
 import io.ktor.http.Url
 import xyz.satr.davprovider.core.AccountStore
 import xyz.satr.davprovider.core.CollectionState
@@ -56,6 +58,10 @@ private val ACCOUNT_ABORTING_CLASSES = setOf(
  *
  * Retrying is the framework's: the outcome is expressed in the [SyncResult] counters and nothing
  * here loops.
+ *
+ * A run begins with §8's pre-flight rather than with the first Collection: [extras] says whether the
+ * user asked for this run, and the answer decides whether the Account's own unmetered-only setting
+ * and its empty selection apply to it at all.
  */
 class SyncEngine(
     private val mapper: ProviderMapper,
@@ -64,11 +70,18 @@ class SyncEngine(
     private val httpClientFactory: DavHttpClientFactory,
     private val classifier: SyncErrorClassifier,
     private val reporter: SyncReporter,
+    private val preferences: SyncPreferences,
+    private val deferrals: SyncDeferralRecorder,
+    metering: NetworkMetering,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
 
+    /** §8's own conditions on a run, applied before anything is read or opened. */
+    private val preflight = SyncPreflight(metering, clock)
+
     suspend fun sync(
         account: Account,
+        extras: Bundle,
         result: SyncResult,
         isCancelled: () -> Boolean = { false },
     ) {
@@ -97,6 +110,33 @@ class SyncEngine(
             result.databaseError = true
             report(account, outcomes, aborted = true, error = null)
             return
+        }
+
+        // §8's conditions, before a client is built: a run that is not allowed to do its work must
+        // not open a connection, and one with nothing to do must not go looking for a certificate.
+        when (
+            val decision = preflight.decide(
+                manual = extras.getBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, false),
+                unmeteredOnly = preferences.unmeteredOnly(account),
+                hasWork = collectionsOf(davAccount).isNotEmpty(),
+            )
+        ) {
+            RunDecision.Proceed -> Unit
+
+            // §5's OK with no Collections, which is the honest answer and leaves a deferral ended
+            // by this run cleared.
+            RunDecision.NothingToDo -> {
+                report(account, outcomes, aborted = false, error = null)
+                return
+            }
+
+            // No counter is touched: nothing failed, and the framework's own retry is what the
+            // delay asks for. Recording the deferral is what the account screen shows as waiting.
+            is RunDecision.Defer -> {
+                result.delayUntil = decision.untilSeconds
+                deferrals.recordDeferred(account)
+                return
+            }
         }
 
         val httpClient = try {

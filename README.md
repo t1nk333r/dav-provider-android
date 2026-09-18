@@ -4,9 +4,10 @@ An Android CalDAV/CardDAV sync provider that can attach **arbitrary HTTP headers
 and/or a **client certificate** per account.
 
 Status: **working prototype.** It syncs. An account configured with only a client
-certificate pulled **368 contacts** from a real CalDAV server behind a
-certificate-gated proxy into the Android contacts provider, with no VPN and no
-custom headers.
+certificate pulled **368 contacts** and **13 events** from a real CalDAV/CardDAV
+server behind a certificate-gated proxy into the Android providers, with no VPN and
+no custom headers. A second sync wrote **0 rows**, so repeat runs update rather than
+duplicate.
 
 The design is specified in [`docs/spec/v1.md`](docs/spec/v1.md); that document is
 the reference for what the code is meant to do. What is built:
@@ -21,9 +22,13 @@ the reference for what the code is meant to do. What is built:
   than reporting every failure as "no DAV services found"
 - A terminal-styled log of recent runs, with search, filters and share
 
-Not yet exercised: the calendar path against real data, and repeat-sync
-idempotence. Two-way sync, tasks and scheduling beyond a fixed interval are out of
-scope, with reasons recorded on the issues.
+Not yet settled: the acceptance criteria name 16 events and the server yielded 13,
+so either the estimate was approximate or a few components did not survive the
+mapping. The log records rows written but not resources read, which is why the
+difference cannot be diagnosed from the app alone.
+
+Two-way sync, tasks and scheduling beyond a fixed interval are out of scope, with
+reasons recorded on the issues.
 
 ## Why
 

@@ -112,8 +112,6 @@ internal fun logHeadline(context: Context, entry: SyncLog.Entry): CharSequence {
                     SyncLog.Kind.UNPARSED -> R.string.log_kind_unparsed
                 },
             ),
-            entry.account,
-            entry.authority?.let { logAuthorityLabel(context, it) },
             entry.displayName ?: entry.collectionId,
         ).joinToString(COLUMN),
     )
@@ -131,6 +129,14 @@ internal fun logHeadline(context: Context, entry: SyncLog.Entry): CharSequence {
  * one with a raw line in it.
  */
 internal fun logDetails(context: Context, entry: SyncLog.Entry): List<String> = buildList {
+    // The Account and the authority are context for every other fact, so they lead — and they are
+    // down here rather than on the headline because a full account name beside a Collection name
+    // pushed the headline past the width and wrapped it mid-token, which costs the column alignment
+    // the headline exists for. The headline keeps what identifies the entry at a glance; the
+    // qualifiers sit under it.
+    listOfNotNull(entry.account, entry.authority?.let { logAuthorityLabel(context, it) })
+        .takeIf { it.isNotEmpty() }
+        ?.let { add(it.joinToString(COLUMN)) }
     entry.summary.takeIf { it.isNotEmpty() }?.let { add(it) }
     entry.httpStatus?.let { add(context.getString(R.string.details_status, it.toString())) }
     entry.firstBodyLine?.let { add(context.getString(R.string.details_body, it)) }
@@ -177,7 +183,7 @@ private fun logAuthorityLabel(context: Context, authority: String): String = whe
 }
 
 /** Sortable and unambiguous in the device's own zone, which is the zone the user reads it in. */
-private const val TIMESTAMP_PATTERN = "yyyy-MM-dd HH:mm:ss"
+private const val TIMESTAMP_PATTERN = "HH:mm:ss"
 
 private val LOG_TIMESTAMP: DateTimeFormatter = DateTimeFormatter.ofPattern(TIMESTAMP_PATTERN, Locale.US)
 

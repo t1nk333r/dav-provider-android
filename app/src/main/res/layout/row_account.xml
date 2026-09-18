@@ -28,6 +28,13 @@
             android:layout_height="wrap_content"
             android:textAppearance="?attr/textAppearanceBodySmall" />
 
+        <TextView
+            android:id="@+id/account_certificate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:visibility="gone" />
+
         <LinearLayout
             android:id="@+id/account_wifi"
             android:layout_width="match_parent"
@@ -110,14 +117,13 @@
                 android:layout_marginStart="8dp"
                 android:text="@string/add_collection" />
 
-            <Button
-                android:id="@+id/account_remove"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:text="@string/remove_account" />
-
         </LinearLayout>
+
+        <Button
+            android:id="@+id/account_remove"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/remove_account" />
 
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>

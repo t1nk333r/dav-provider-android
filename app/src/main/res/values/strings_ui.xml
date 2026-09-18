@@ -17,10 +17,29 @@
     <string name="cloudflare_shortcut">Cloudflare Access</string>
     <string name="section_certificate">Client certificate</string>
     <string name="no_certificate">No certificate selected</string>
-    <string name="certificate_selected">Certificate: %1$s</string>
-    <string name="choose_certificate">Choose certificate</string>
+    <string name="choose_certificate">Choose from KeyChain</string>
+    <string name="import_certificate">Import a .p12 file</string>
     <string name="clear_certificate">Clear certificate</string>
-    <string name="certificate_note">Only the alias is stored; the key stays in the Android KeyChain.</string>
+    <string name="certificate_note">Alternatives, not both: the KeyChain keeps the key, an imported file is re-encrypted here.</string>
+
+    <!-- Certificate import -->
+
+    <string name="certificate_passphrase">File passphrase</string>
+    <string name="certificate_passphrase_note">Opens the file once. Not stored: the archive is re-encrypted here.</string>
+    <string name="certificate_import_pending">The file is imported when you save the account.</string>
+    <string name="certificate_imported">Imported certificate</string>
+    <string name="certificate_subject">Subject: %1$s</string>
+    <string name="certificate_issuer">Issuer: %1$s</string>
+    <string name="certificate_expires">Expires %1$s</string>
+    <string name="certificate_expired">Expired %1$s — only the server decides whether it is still accepted</string>
+    <string name="certificate_not_pkcs12">That file is not a PKCS#12 archive: the passphrase was not the problem.</string>
+    <string name="certificate_wrong_passphrase">The passphrase did not open the file.</string>
+    <string name="certificate_no_private_key">The file holds certificates but no private key, so it cannot authenticate.</string>
+    <string name="certificate_import_failed">The certificate could not be imported: %1$s</string>
+    <string name="certificate_unreadable">The file could not be read: %1$s</string>
+    <string name="certificate_wrong_passphrase_title">Wrong passphrase</string>
+    <string name="certificate_wrong_passphrase_message">That passphrase did not open the file. Retype it to import the certificate.</string>
+    <string name="certificate_retype">Retype passphrase</string>
     <string name="section_credentials">Username and password</string>
     <string name="field_username">Username (optional)</string>
     <string name="field_password">Password (secret, optional)</string>
@@ -68,6 +87,10 @@
     <string name="status_detail_never_synced">No sync has run for this account</string>
     <string name="last_sync">Last sync: %1$s</string>
     <string name="last_sync_never">Last sync: never</string>
+    <string name="certificate_keychain">KeyChain certificate: %1$s</string>
+    <string name="certificate_imported_valid">Imported certificate: %1$s, expires %2$s</string>
+    <string name="certificate_imported_expired">Imported certificate: %1$s, expired %2$s</string>
+    <string name="certificate_imported_missing">Imported certificate: cannot be read; import the file again.</string>
     <string name="waiting_for_wifi">Waiting for Wi-Fi: this account only syncs on unmetered networks.</string>
     <string name="sync_anyway">Sync anyway</string>
     <string name="sync_now">Sync now</string>
@@ -82,7 +105,7 @@
     <string name="diagnose_variant_unauthenticated">Fully unauthenticated</string>
     <string name="diagnose_unreadable">Credentials cannot be read for this account, so their contribution cannot be varied. Re-enter them in the account.</string>
     <string name="collections">Collections</string>
-    <string name="no_collections">No Collections stored. Discovery is not connected in this build, so add a Collection URL directly.</string>
+    <string name="no_collections">No Collections stored. Check collections to find them on the server, or add a Collection URL directly.</string>
     <string name="refresh_collections">Check collections</string>
     <string name="add_collection">Add collection URL</string>
     <string name="collections_checked">Checked the server: %1$d Collections stored, %2$d added.</string>
@@ -114,7 +137,6 @@
     <string name="collection_meta">%1$s \u00b7 %2$s</string>
     <string name="status_line">%1$s: %2$s</string>
     <string name="clip_label">DAV server check</string>
-    <string name="discovery_not_connected">No request was sent: the progressive discovery walk (.well-known, current-user-principal, home set, enumerate) is owned by the sync slice and is not connected in this build. Existing Collections keep their availability; paste a Collection URL to configure this account.</string>
     <string name="diagnose_row_head">HTTP %1$s  \u00b7  certificate offered: %2$s  \u00b7  %3$s</string>
 
     <!-- Export and import -->
@@ -123,7 +145,7 @@
     <string name="import_accounts">Import accounts</string>
     <string name="export_start">Export</string>
     <string name="import_start">Import</string>
-    <string name="export_note">The file holds every account, including header values, passwords and certificate aliases, encrypted with this passphrase. A restored device has no KeyChain key, so this file is the portable copy: keep the passphrase, it cannot be recovered.</string>
+    <string name="export_note">Every account, with its headers, passwords and imported certificate archives, encrypted with this passphrase. A KeyChain alias travels but resolves to nothing after a restore; an imported archive works. Keep the passphrase, it cannot be recovered.</string>
     <string name="import_note">Type the passphrase this file was exported with.</string>
     <string name="export_passphrase">Passphrase</string>
     <string name="export_passphrase_repeat">Passphrase again</string>
@@ -138,6 +160,7 @@
     <string name="import_done">Imported %1$d accounts.</string>
     <string name="import_skipped">Left untouched, %1$d accounts already on this device: %2$s</string>
     <string name="import_failed_accounts">%1$d accounts could not be imported: %2$s</string>
+    <string name="import_certificate_missing">Imported without a certificate, which this file does not carry: %1$s</string>
     <string name="import_version">This file declares format version %1$d, which this build does not know. Nothing was imported.</string>
     <string name="import_wrong_passphrase">The passphrase does not open this file, or the file changed after it was written.</string>
     <string name="import_failed">The file could not be read: %1$s</string>

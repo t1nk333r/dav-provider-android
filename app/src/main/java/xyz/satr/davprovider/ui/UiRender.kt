@@ -6,7 +6,12 @@ import android.content.Context
 import android.text.format.DateUtils
 import android.view.View
 import android.widget.Toast
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import xyz.satr.davprovider.R
+import xyz.satr.davprovider.core.ClientCertificateInfo
+import xyz.satr.davprovider.core.ClientCertificateSource
 import xyz.satr.davprovider.core.CollectionType
 import xyz.satr.davprovider.core.DavCollection
 import xyz.satr.davprovider.core.SyncError
@@ -66,6 +71,57 @@ internal fun lastSyncLabel(context: Context, atMillis: Long): String =
     } else {
         context.getString(R.string.last_sync, DateUtils.getRelativeTimeSpanString(atMillis))
     }
+
+/**
+ * A client certificate's expiry as a plain date, in the device's own zone.
+ *
+ * A date and not a verdict: an expired certificate is reported and offered, never refused, because
+ * whether one is still accepted is the server's answer to give — the app has no way to know, and a
+ * refusal here would take away the only way to find out.
+ */
+internal fun certificateDate(notAfter: Long): String =
+    DateTimeFormatter.ISO_LOCAL_DATE.format(Instant.ofEpochMilli(notAfter).atZone(ZoneId.systemDefault()))
+
+/**
+ * The Account's client certificate as one line, for the settings screen and for the setup screen's
+ * own status line. Null when the Account has none, so a caller can leave its row out.
+ *
+ * The two sources are named apart on purpose: a KeyChain alias that no longer resolves and an
+ * archive that is gone after a restore look identical in a TLS failure, and telling them apart is
+ * the whole reason both are offered.
+ */
+internal fun certificateLine(
+    context: Context,
+    source: ClientCertificateSource?,
+    info: ClientCertificateInfo?,
+): String? = when (source) {
+    null -> null
+    is ClientCertificateSource.KeyChainAlias -> context.getString(R.string.certificate_keychain, source.alias)
+    ClientCertificateSource.Imported -> when {
+        info == null -> context.getString(R.string.certificate_imported_missing)
+        info.expired -> context.getString(
+            R.string.certificate_imported_expired,
+            info.subject,
+            certificateDate(info.notAfter),
+        )
+
+        else -> context.getString(
+            R.string.certificate_imported_valid,
+            info.subject,
+            certificateDate(info.notAfter),
+        )
+    }
+}
+
+/** What an imported identity says about itself, one fact per line. */
+internal fun certificateDetails(context: Context, info: ClientCertificateInfo): String = listOf(
+    context.getString(R.string.certificate_subject, info.subject),
+    context.getString(R.string.certificate_issuer, info.issuer),
+    context.getString(
+        if (info.expired) R.string.certificate_expired else R.string.certificate_expires,
+        certificateDate(info.notAfter),
+    ),
+).joinToString("\n")
 
 /**
  * The Details expander's text: what was observed, verbatim, in a fixed order, so that a support

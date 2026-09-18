@@ -3,25 +3,32 @@ package xyz.satr.davprovider.net
 import android.content.Context
 import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
+import xyz.satr.davprovider.core.ClientCertificateSource
+import xyz.satr.davprovider.core.ClientCertificateStore
 import xyz.satr.davprovider.core.DavAccount
 import xyz.satr.davprovider.core.DavHttpClient
 import xyz.satr.davprovider.core.DavHttpClientFactory
+import xyz.satr.davprovider.store.ClientCertificateStoreImpl
 
 private const val TIMEOUT_SECONDS = 30L
 
 /**
  * Builds the HTTP client of one Account out of that Account alone: its Headers, its Basic
- * credentials and its KeyChain alias. Nothing is read from storage here, so a caller can copy an
- * Account with one mechanism removed and get exactly the client that mechanism's absence describes.
+ * credentials and its client certificate. Nothing but the certificate material is read from storage
+ * here, so a caller can copy an Account with one mechanism removed and get exactly the client that
+ * mechanism's absence describes.
  */
-class DavHttpClientFactoryImpl(context: Context) : DavHttpClientFactory {
+class DavHttpClientFactoryImpl(
+    context: Context,
+    private val certificates: ClientCertificateStore = ClientCertificateStoreImpl(context),
+) : DavHttpClientFactory {
 
     // The KeyChain needs a context that outlives an Activity.
-    private val context: Context = context.applicationContext
+    private val appContext: Context = context.applicationContext
 
     /**
-     * @throws ClientCertificateUnavailableException when the Account names an alias the KeyChain no
-     * longer resolves. Blocking when an alias is set; call it off the main thread.
+     * @throws ClientCertificateUnavailableException when the Account names a KeyChain alias that no
+     * longer resolves. Blocking when one is set; call it off the main thread.
      */
     override fun create(davAccount: DavAccount): DavHttpClient {
         val builder = OkHttpClient.Builder()
@@ -40,18 +47,38 @@ class DavHttpClientFactoryImpl(context: Context) : DavHttpClientFactory {
         // Added last, so a Header configured under a name Basic also uses is the one that is sent.
         builder.addInterceptor(DavHeaderInterceptor(davAccount.headers))
 
-        val keyManager = davAccount.certAlias?.let { loadKeyChainKeyManager(context, it) }
+        val keyManager = keyManagerFor(davAccount)
         if (keyManager != null) {
             val trustManager = platformTrustManager()
             builder.sslSocketFactory(sslSocketFactory(keyManager, trustManager), trustManager)
         }
         return DavHttpClientImpl(builder.build(), keyManager)
     }
+
+    /**
+     * The Account's client certificate, if it selects one.
+     *
+     * A KeyChain alias is resolved here, so a selection that no longer resolves fails before a
+     * request exists and can be reported as itself. An imported archive is not: the lookup is
+     * handed to the manager and read per handshake, so an import or a removal applies to the next
+     * request instead of only to the next client.
+     */
+    private fun keyManagerFor(davAccount: DavAccount): ClientKeyManager? =
+        when (val source = davAccount.certificate) {
+            null -> null
+            is ClientCertificateSource.KeyChainAlias ->
+                loadKeyChainKeyManager(appContext, source.alias, davAccount.origin)
+
+            ClientCertificateSource.Imported ->
+                ClientKeyManager(IMPORTED_ALIAS, davAccount.origin) {
+                    certificates.identity(davAccount.androidAccount)
+                }
+        }
 }
 
 internal class DavHttpClientImpl(
     override val okHttp: OkHttpClient,
-    private val keyManager: KeyChainKeyManager?,
+    private val keyManager: ClientKeyManager?,
 ) : DavHttpClient {
 
     /**

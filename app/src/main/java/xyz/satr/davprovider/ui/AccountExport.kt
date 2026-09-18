@@ -10,6 +10,7 @@ import javax.crypto.spec.SecretKeySpec
 import java.security.SecureRandom
 import org.json.JSONArray
 import org.json.JSONObject
+import xyz.satr.davprovider.core.ClientCertificateSource
 import xyz.satr.davprovider.core.CollectionType
 import xyz.satr.davprovider.core.DavAccount
 import xyz.satr.davprovider.core.DavCollection
@@ -22,6 +23,14 @@ import xyz.satr.davprovider.core.DavHeader
  * that a device-to-device restore does not carry over — so this file is the copy that can be
  * carried to another device, and it is the reason the passphrase exists rather than the Keystore.
  *
+ * The certificate is carried as far as it can be. An **imported** identity travels whole: the
+ * re-wrapped archive and the passphrase that opens it are written beside the Account, so a restored
+ * device can present it without the file being picked and opened again. A **KeyChain** identity
+ * travels as the alias alone, because that is all this app ever holds — the key stays in the system
+ * Keystore of the device that has it, so the alias is restored but resolves to nothing after a
+ * restore, which is precisely the failure the imported route exists to fix. What is *not* carried
+ * anywhere is the user's own file passphrase: it is used once, at import, and never stored.
+ *
  * The envelope is plain JSON so the reader can refuse an unknown `formatVersion` *before* being
  * asked for a passphrase; nothing is guessed from a file, and an unknown version is refused whole.
  * The payload names the key-derivation algorithm and its iteration count so that raising the count
@@ -29,7 +38,25 @@ import xyz.satr.davprovider.core.DavHeader
  */
 internal object AccountExport {
 
-    const val FORMAT_VERSION = 1
+    /** Written by this build. Raised from 1 when the imported identity joined the payload. */
+    const val FORMAT_VERSION = 2
+
+    /**
+     * Versions this build reads. v1 predates the imported identity, so its Accounts simply have no
+     * certificate of their own; reading it is not a guess. Refusing it would strand the export a
+     * restored device depends on, which is the one file that must survive an upgrade.
+     */
+    private val READABLE_VERSIONS = setOf(1, FORMAT_VERSION)
+
+    /**
+     * The app-held half of an imported identity, verbatim as the CredentialStore holds it: the
+     * archive this app re-wrapped, and the passphrase that opens that copy of it. Both rank with a
+     * password, so both only ever appear inside the encrypted payload.
+     */
+    data class ImportedCertificate(val archive: String, val passphrase: String)
+
+    /** One Account, and the imported identity that has to be put back beside it on restore. */
+    data class Entry(val account: DavAccount, val importedCertificate: ImportedCertificate?)
 
     /**
      * PBKDF2-HMAC-SHA1 is the strongest PBKDF2 this app's minimum platform ships; its security
@@ -51,12 +78,20 @@ internal object AccountExport {
     class WrongPassphraseException(cause: Throwable?) :
         Exception("The passphrase does not open this file", cause)
 
-    fun encode(accounts: List<DavAccount>, passphrase: CharArray): String {
+    /**
+     * [certificates] holds the app-held half of each imported identity, keyed by Account label —
+     * the same key the file's Accounts are keyed on, so an archive cannot land on another Account.
+     */
+    fun encode(
+        accounts: List<DavAccount>,
+        certificates: Map<String, ImportedCertificate>,
+        passphrase: CharArray,
+    ): String {
         val salt = randomBytes(SALT_BYTES)
         val iv = randomBytes(IV_BYTES)
         val cipher = Cipher.getInstance(CIPHER)
         cipher.init(Cipher.ENCRYPT_MODE, key(passphrase, salt, ITERATIONS), GCMParameterSpec(TAG_BITS, iv))
-        val sealed = cipher.doFinal(payload(accounts).toByteArray(Charsets.UTF_8))
+        val sealed = cipher.doFinal(payload(accounts, certificates).toByteArray(Charsets.UTF_8))
         return JSONObject().apply {
             put(KEY_FORMAT_VERSION, FORMAT_VERSION)
             put(KEY_KDF, KDF)
@@ -68,10 +103,10 @@ internal object AccountExport {
         }.toString(2)
     }
 
-    fun decode(file: String, passphrase: CharArray): List<DavAccount> {
+    fun decode(file: String, passphrase: CharArray): List<Entry> {
         val envelope = JSONObject(file)
         val version = envelope.optInt(KEY_FORMAT_VERSION, -1)
-        if (version != FORMAT_VERSION) throw UnknownFormatVersionException(version)
+        if (version !in READABLE_VERSIONS) throw UnknownFormatVersionException(version)
         if (envelope.optString(KEY_KDF) != KDF || envelope.optString(KEY_CIPHER) != CIPHER) {
             throw UnknownFormatVersionException(version)
         }
@@ -86,17 +121,21 @@ internal object AccountExport {
         } catch (e: AEADBadTagException) {
             throw WrongPassphraseException(e)
         }
-        return accounts(JSONObject(String(cleartext, Charsets.UTF_8)))
+        return accounts(JSONObject(String(cleartext, Charsets.UTF_8)), version)
     }
 
-    private fun payload(accounts: List<DavAccount>): String {
+    private fun payload(accounts: List<DavAccount>, certificates: Map<String, ImportedCertificate>): String {
         val array = JSONArray()
         accounts.forEach { account ->
             array.put(
                 JSONObject().apply {
                     put(KEY_LABEL, account.label)
                     put(KEY_BASE_URL, account.baseUrl)
-                    account.certAlias?.let { put(KEY_CERT_ALIAS, it) }
+                    account.certificate?.let { put(KEY_CERTIFICATE, certificate(it)) }
+                    certificates[account.label]?.let { importedCertificate ->
+                        put(KEY_CERTIFICATE_ARCHIVE, importedCertificate.archive)
+                        put(KEY_CERTIFICATE_PASSPHRASE, importedCertificate.passphrase)
+                    }
                     account.username?.let { put(KEY_USERNAME, it) }
                     // The secret fields are the point of the passphrase.
                     account.password?.let { put(KEY_PASSWORD, it) }
@@ -138,9 +177,9 @@ internal object AccountExport {
         }.toString()
     }
 
-    private fun accounts(root: JSONObject): List<DavAccount> {
+    private fun accounts(root: JSONObject, version: Int): List<Entry> {
         val array = root.optJSONArray(KEY_ACCOUNTS) ?: JSONArray()
-        val accounts = ArrayList<DavAccount>(array.length())
+        val entries = ArrayList<Entry>(array.length())
         for (index in 0 until array.length()) {
             val account = array.getJSONObject(index)
             // Header order is position, not name: two headers may share a name.
@@ -164,17 +203,67 @@ internal object AccountExport {
                     available = collection.optBoolean(KEY_AVAILABLE, true),
                 )
             }
-            accounts += DavAccount(
-                label = account.getString(KEY_LABEL),
-                baseUrl = account.getString(KEY_BASE_URL),
-                headers = headerList,
-                certAlias = account.optString(KEY_CERT_ALIAS).takeIf { it.isNotEmpty() },
-                username = account.optString(KEY_USERNAME).takeIf { it.isNotEmpty() },
-                password = account.optString(KEY_PASSWORD).takeIf { it.isNotEmpty() },
-                collections = collectionList,
+            entries += Entry(
+                account = DavAccount(
+                    label = account.getString(KEY_LABEL),
+                    baseUrl = account.getString(KEY_BASE_URL),
+                    headers = headerList,
+                    certificate = certificate(account, version),
+                    username = account.optString(KEY_USERNAME).takeIf { it.isNotEmpty() },
+                    password = account.optString(KEY_PASSWORD).takeIf { it.isNotEmpty() },
+                    collections = collectionList,
+                ),
+                importedCertificate = importedCertificate(account),
             )
         }
-        return accounts
+        return entries
+    }
+
+    /**
+     * The Account's certificate as the payload declares it.
+     *
+     * A v1 file predates the imported identity and named a KeyChain alias under its own key, so that
+     * key is read for a v1 file — dropping it would silently turn a configured Account into an
+     * unconfigured one. The field is not a guess: it is what this app itself wrote at version 1.
+     */
+    private fun certificate(account: JSONObject, version: Int): ClientCertificateSource? {
+        val fields = account.optJSONObject(KEY_CERTIFICATE)
+        if (fields == null) {
+            if (version >= FORMAT_VERSION) return null
+            return account.optString(KEY_LEGACY_CERT_ALIAS).takeIf { it.isNotEmpty() }
+                ?.let { ClientCertificateSource.KeyChainAlias(it) }
+        }
+        val source = fields.optString(KEY_SOURCE)
+        return when (source) {
+            SOURCE_KEYCHAIN -> ClientCertificateSource.KeyChainAlias(
+                fields.optString(KEY_CERT_ALIAS).takeIf { it.isNotEmpty() }
+                    ?: error("A KeyChain certificate with no alias"),
+            )
+
+            SOURCE_IMPORTED -> ClientCertificateSource.Imported
+            // Never guessed: an identity is either one this build knows or the file is refused.
+            else -> error("Unknown certificate source \"$source\"")
+        }
+    }
+
+    private fun importedCertificate(account: JSONObject): ImportedCertificate? {
+        val archive = account.optString(KEY_CERTIFICATE_ARCHIVE)
+        val passphrase = account.optString(KEY_CERTIFICATE_PASSPHRASE)
+        if (archive.isEmpty() && passphrase.isEmpty()) return null
+        // Half an archive is not half an identity: both halves are written, or neither is.
+        require(archive.isNotEmpty() && passphrase.isNotEmpty()) { "An imported certificate is missing a half" }
+        return ImportedCertificate(archive, passphrase)
+    }
+
+    private fun certificate(source: ClientCertificateSource): JSONObject = JSONObject().apply {
+        when (source) {
+            is ClientCertificateSource.KeyChainAlias -> {
+                put(KEY_SOURCE, SOURCE_KEYCHAIN)
+                put(KEY_CERT_ALIAS, source.alias)
+            }
+
+            ClientCertificateSource.Imported -> put(KEY_SOURCE, SOURCE_IMPORTED)
+        }
     }
 
     private fun key(passphrase: CharArray, salt: ByteArray, iterations: Int): SecretKeySpec {
@@ -203,7 +292,15 @@ internal object AccountExport {
     private const val KEY_ACCOUNTS = "accounts"
     private const val KEY_LABEL = "label"
     private const val KEY_BASE_URL = "baseUrl"
-    private const val KEY_CERT_ALIAS = "certAlias"
+    private const val KEY_CERTIFICATE = "certificate"
+    private const val KEY_SOURCE = "source"
+    private const val SOURCE_KEYCHAIN = "keychain"
+    private const val SOURCE_IMPORTED = "imported"
+    private const val KEY_CERT_ALIAS = "alias"
+    /** What version 1 called a KeyChain alias, before an Account could hold an identity of its own. */
+    private const val KEY_LEGACY_CERT_ALIAS = "certAlias"
+    private const val KEY_CERTIFICATE_ARCHIVE = "certificateArchive"
+    private const val KEY_CERTIFICATE_PASSPHRASE = "certificatePassphrase"
     private const val KEY_USERNAME = "username"
     private const val KEY_PASSWORD = "password"
     private const val KEY_HEADERS = "headers"

@@ -406,7 +406,7 @@ class SyncEngine(
     private fun errorMapping(davAccount: DavAccount, http: DavHttpSession) = ErrorMapping(
         classifier = classifier,
         certificateOffered = http.certificateOffered,
-        certificateConfigured = davAccount.certAlias != null,
+        certificateConfigured = davAccount.certificate != null,
         lastExchange = { http.lastExchange },
     )
 

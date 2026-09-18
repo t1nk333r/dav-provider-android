@@ -6,6 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import xyz.satr.davprovider.core.ClientCertificateSource
 import xyz.satr.davprovider.core.CollectionType
 import xyz.satr.davprovider.core.DavAccount
 import xyz.satr.davprovider.core.DavCollection
@@ -28,7 +29,7 @@ class AccountRecordJsonTest {
                 DavHeader("CF-Access-Client-Id", "id"),
                 DavHeader("CF-Access-Client-Secret", "token"),
             ),
-            certAlias = "dav-client",
+            certificate = ClientCertificateSource.KeyChainAlias("dav-client"),
             username = "user",
             password = "hunter2",
             collections = listOf(
@@ -54,10 +55,36 @@ class AccountRecordJsonTest {
 
         assertEquals(account.label, decoded.label)
         assertEquals(account.baseUrl, decoded.baseUrl)
-        assertEquals(account.certAlias, decoded.certAlias)
+        assertEquals(account.certificate, decoded.certificate)
         assertEquals(account.username, decoded.username)
         assertEquals(account.collections, decoded.collections)
         assertEquals(account.headers.map { it.name }, decoded.headers.map { it.name })
+    }
+
+    @Test
+    fun `keeps an imported certificate as a source of its own`() {
+        val account = DavAccount(
+            label = "server",
+            baseUrl = "https://dav.invalid/root/",
+            certificate = ClientCertificateSource.Imported,
+        )
+
+        val decoded = AccountRecordJson.decode(AccountRecordJson.encode(account), account.label)
+
+        assertEquals(ClientCertificateSource.Imported, decoded.certificate)
+    }
+
+    @Test
+    fun `refuses a certificate record it cannot interpret`() {
+        val base = mapOf<String, Any?>("baseUrl" to "https://dav.invalid/")
+
+        assertThrows(IllegalStateException::class.java) {
+            AccountRecordJson.decode(base + ("certificate" to mapOf("source" to "pkcs11")), "server")
+        }
+        // A KeyChain selection with no alias names nothing the KeyChain could resolve.
+        assertThrows(IllegalStateException::class.java) {
+            AccountRecordJson.decode(base + ("certificate" to mapOf("source" to "keychain")), "server")
+        }
     }
 
     @Test
@@ -82,7 +109,7 @@ class AccountRecordJsonTest {
         val decoded = AccountRecordJson.decode(mapOf("baseUrl" to "https://dav.invalid/"), "server")
 
         assertEquals("https://dav.invalid/", decoded.baseUrl)
-        assertNull(decoded.certAlias)
+        assertNull(decoded.certificate)
         assertNull(decoded.username)
         assertNull(decoded.password)
         assertTrue(decoded.headers.isEmpty())
@@ -109,5 +136,23 @@ class AccountRecordJsonTest {
                 "server",
             )
         }
+    }
+
+    /**
+     * An Account saved before the certificate gained a source discriminator stored a bare
+     * `certAlias`. Dropping it on upgrade would leave a configured Account quietly failing
+     * handshakes with nothing on screen to explain why.
+     */
+    @Test
+    fun `a record from an older build keeps its KeyChain certificate`() {
+        val account = AccountRecordJson.decode(
+            mapOf(
+                "baseUrl" to "https://dav.invalid/root/",
+                "certAlias" to "some-alias",
+            ),
+            "server",
+        )
+
+        assertEquals(ClientCertificateSource.KeyChainAlias("some-alias"), account.certificate)
     }
 }

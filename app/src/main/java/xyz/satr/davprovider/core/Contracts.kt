@@ -33,17 +33,47 @@ data class DavCollection(
     val available: Boolean = true,
 )
 
+/**
+ * Where an Account's client certificate comes from.
+ *
+ * Two sources, because they fail differently. A [KeyChainAlias] is owned by the system: the key
+ * never enters this process, but the alias stops resolving after a device restore. An [Imported]
+ * archive is owned by the app: it survives a restore inside the encrypted export, at the cost of
+ * holding key material we are then responsible for.
+ */
+sealed interface ClientCertificateSource {
+    /** The system KeyChain holds the key; only the alias is stored. */
+    data class KeyChainAlias(val alias: String) : ClientCertificateSource
+
+    /** A PKCS#12 archive the app holds, re-wrapped under its own random passphrase. */
+    data object Imported : ClientCertificateSource
+}
+
+/**
+ * What an imported identity says about itself. [expired] is reported, never enforced: only the
+ * server decides whether it still accepts a certificate.
+ */
+data class ClientCertificateInfo(
+    val subject: String,
+    val issuer: String,
+    val notAfter: Long,
+    val expired: Boolean,
+)
+
 /** One configured server. Exactly one AccountManager account. */
 data class DavAccount(
     val label: String,
     val baseUrl: String,
     val headers: List<DavHeader> = emptyList(),
-    val certAlias: String? = null,
+    val certificate: ClientCertificateSource? = null,
     val username: String? = null,
     val password: String? = null,
     val collections: List<DavCollection> = emptyList(),
 ) {
     val androidAccount: Account get() = Account(label, ACCOUNT_TYPE)
+
+    /** The origin an identity may be released to. A redirect elsewhere must never receive it. */
+    val origin: String? get() = runCatching { java.net.URI(baseUrl).let { "${it.scheme}://${it.host}:${it.port}" } }.getOrNull()
 }
 
 // ---------------------------------------------------------------- errors
@@ -94,6 +124,50 @@ data class ResponseEvidence(
 interface SyncErrorClassifier {
     /** Applies the spec's ordered rules; first match wins. Status alone never decides severity. */
     fun classify(evidence: ResponseEvidence): SyncError
+}
+
+// ------------------------------------------------- imported client certificates
+
+/** Why a PKCS#12 import failed, kept distinct so the message names something the user can act on. */
+sealed interface CertificateImportResult {
+    data class Success(val info: ClientCertificateInfo) : CertificateImportResult
+
+    /** PKCS#12 integrity is a MAC over the passphrase, so well-formed DER that will not load is this. */
+    data object WrongPassphrase : CertificateImportResult
+
+    /** Not a DER SEQUENCE, or not a PKCS#12 at all. Blaming the passphrase here would be a lie. */
+    data object NotAPkcs12 : CertificateImportResult
+
+    /** An archive holding only certificates. Nothing here can authenticate a handshake. */
+    data object NoPrivateKey : CertificateImportResult
+}
+
+/** A private key and its chain, held only for the duration of a handshake. */
+data class ClientIdentity(
+    val privateKey: java.security.PrivateKey,
+    val chain: Array<java.security.cert.X509Certificate>,
+)
+
+/**
+ * Holds an imported PKCS#12 identity for an Account.
+ *
+ * The user's own passphrase is never persisted — it is often reused elsewhere. The archive is
+ * re-wrapped under a random passphrase generated here, and both the bytes and that passphrase go
+ * through [CredentialStore], so no key material is ever written in the clear.
+ */
+interface ClientCertificateStore {
+    fun import(account: Account, pkcs12: ByteArray, passphrase: CharArray): CertificateImportResult
+
+    fun info(account: Account): ClientCertificateInfo?
+
+    /**
+     * The identity, or null when none is installed. Implementations self-heal: if our own copy no
+     * longer parses (Keystore key rotated, record corrupted) both records are deleted rather than
+     * failing every request from then on.
+     */
+    fun identity(account: Account): ClientIdentity?
+
+    fun remove(account: Account)
 }
 
 // ---------------------------------------------------------------- credentials

@@ -4,6 +4,7 @@ import android.accounts.Account
 import android.accounts.AccountManager
 import android.accounts.AccountAuthenticatorResponse
 import android.app.Activity
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -17,13 +18,21 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.IntentCompat
 import androidx.core.widget.doAfterTextChanged
+import com.google.android.material.color.MaterialColors
 import java.util.concurrent.Executors
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import xyz.satr.davprovider.R
 import xyz.satr.davprovider.core.ACCOUNT_TYPE
+import xyz.satr.davprovider.core.AccountStore
+import xyz.satr.davprovider.core.CertificateImportResult
+import xyz.satr.davprovider.core.ClientCertificateInfo
+import xyz.satr.davprovider.core.ClientCertificateSource
+import xyz.satr.davprovider.core.ClientCertificateStore
 import xyz.satr.davprovider.core.CredentialsUnreadableException
 import xyz.satr.davprovider.core.DavAccount
 import xyz.satr.davprovider.core.DavHeader
@@ -36,6 +45,11 @@ import xyz.satr.davprovider.error.credentialsUnreadable
  * Only the base URL is required. Nothing here refuses a save for want of a credential, because an
  * unauthenticated server is a real configuration and a form rule would reject it; what the server
  * actually does is reported by the check that runs after the save.
+ *
+ * The client certificate is offered two ways, as alternatives: an alias in the system KeyChain, and
+ * a `.p12` file this app holds itself. They fail differently — the alias stops resolving after a
+ * device restore, an imported archive travels inside the Account's own encrypted export — so the
+ * screen keeps them apart and names the one an Account has.
  */
 class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
 
@@ -43,7 +57,8 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
     private lateinit var labelInput: EditText
     private lateinit var labelNote: TextView
     private lateinit var headerRows: LinearLayout
-    private lateinit var certAliasView: TextView
+    private lateinit var certStatusView: TextView
+    private lateinit var certDetailsView: TextView
     private lateinit var usernameInput: EditText
     private lateinit var passwordInput: EditText
     private lateinit var saveButton: Button
@@ -53,7 +68,17 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
     private lateinit var probeDetails: TextView
     private lateinit var probeToggle: Button
 
-    private var certAlias: String? = null
+    /** Colors to return to: only the certificate section is ever recoloured, and only to warn. */
+    private var certStatusColor = 0
+    private var certDetailsColor = 0
+
+    private var certificate: ClientCertificateSource? = null
+
+    /** What the imported archive says about itself, once it has been read. */
+    private var importedInfo: ClientCertificateInfo? = null
+
+    /** A picked archive, held until the Account exists to hold it. */
+    private var pendingImport: PendingImport? = null
 
     /** Set by "Clear password"; typed text clears it again, so the intent is never stale. */
     private var passwordCleared = false
@@ -67,6 +92,11 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
     private val executor = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
 
+    private val openDocument =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) readArchive(uri)
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_account_setup)
@@ -77,7 +107,8 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         labelInput = findViewById(R.id.label_input)
         labelNote = findViewById(R.id.label_note)
         headerRows = findViewById(R.id.header_rows)
-        certAliasView = findViewById(R.id.cert_alias)
+        certStatusView = findViewById(R.id.cert_status)
+        certDetailsView = findViewById(R.id.cert_details)
         usernameInput = findViewById(R.id.username_input)
         passwordInput = findViewById(R.id.password_input)
         saveButton = findViewById(R.id.save_account)
@@ -86,6 +117,8 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         probeSummary = findViewById(R.id.probe_summary)
         probeDetails = findViewById(R.id.probe_details)
         probeToggle = findViewById(R.id.probe_details_toggle)
+        certStatusColor = certStatusView.currentTextColor
+        certDetailsColor = certDetailsView.currentTextColor
 
         authenticatorResponse = IntentCompat.getParcelableExtra(
             intent,
@@ -97,6 +130,7 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         findViewById<Button>(R.id.add_header).setOnClickListener { addHeaderRow("", "") }
         findViewById<Button>(R.id.cloudflare_shortcut).setOnClickListener { seedProxyHeaders() }
         findViewById<Button>(R.id.choose_certificate).setOnClickListener { chooseCertificate() }
+        findViewById<Button>(R.id.import_certificate).setOnClickListener { importCertificate() }
         findViewById<Button>(R.id.clear_certificate).setOnClickListener { clearCertificate() }
         findViewById<Button>(R.id.clear_password).setOnClickListener { clearPassword() }
         passwordInput.doAfterTextChanged { text -> if (!text.isNullOrEmpty()) passwordCleared = false }
@@ -126,17 +160,26 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
      * Survives a rotation or a theme change, which recreate this activity and would otherwise take
      * the header rows and the chosen certificate with them.
      *
-     * Header *values* and the password are deliberately absent: the instance state is not where
-     * secrets belong, and the two fields that hold them switch the platform's own view-state saving
-     * off for the same reason. After a rotation they are retyped, and the seeded row names are
-     * still there to retype into.
+     * Header *values*, the password and a picked file's passphrase are deliberately absent: the
+     * instance state is not where secrets belong, and the two fields that hold them switch the
+     * platform's own view-state saving off for the same reason. After a rotation they are retyped,
+     * and the seeded row names are still there to retype into — the certificate *source* is kept,
+     * because losing it would make the next save delete an identity that is still working.
      */
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString(KEY_URL, urlInput.text.toString())
         outState.putString(KEY_LABEL, labelInput.text.toString())
         outState.putString(KEY_USERNAME, usernameInput.text.toString())
-        outState.putString(KEY_CERT_ALIAS, certAlias)
+        outState.putString(
+            KEY_CERT_SOURCE,
+            when (certificate) {
+                is ClientCertificateSource.KeyChainAlias -> CERT_KEYCHAIN
+                ClientCertificateSource.Imported -> CERT_IMPORTED
+                null -> null
+            },
+        )
+        outState.putString(KEY_CERT_ALIAS, (certificate as? ClientCertificateSource.KeyChainAlias)?.alias)
         outState.putBoolean(KEY_STORED, stored)
         outState.putBoolean(KEY_PASSWORD_CLEARED, passwordCleared)
         outState.putString(KEY_SUMMARY, probeSummary.text?.toString())
@@ -155,10 +198,18 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         labelInput.setText(state.getString(KEY_LABEL))
         usernameInput.setText(state.getString(KEY_USERNAME))
         derivedLabel = null
-        state.getString(KEY_CERT_ALIAS)?.let { alias ->
-            certAlias = alias
-            certAliasView.text = getString(R.string.certificate_selected, alias)
+        when (state.getString(KEY_CERT_SOURCE)) {
+            CERT_KEYCHAIN -> state.getString(KEY_CERT_ALIAS)?.let {
+                certificate = ClientCertificateSource.KeyChainAlias(it)
+            }
+
+            CERT_IMPORTED -> {
+                certificate = ClientCertificateSource.Imported
+                // What the archive says is read back from the archive: it is not carried here.
+                readImportedInfo()
+            }
         }
+        refreshCertificateView()
         state.getStringArrayList(KEY_HEADER_NAMES)?.forEach { name -> addHeaderRow(name, "") }
         passwordCleared = state.getBoolean(KEY_PASSWORD_CLEARED)
         if (state.getBoolean(KEY_STORED)) {
@@ -179,29 +230,274 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
     }
 
     override fun onDestroy() {
+        // The user's passphrase and the archive it opened are dropped with the screen: used, not kept.
+        discardPendingImport()
         executor.shutdown()
         super.onDestroy()
     }
 
     // ------------------------------------------------------------ certificate
 
+    /** The KeyChain's answer is the alias; the key itself never enters this process. */
     private fun chooseCertificate() {
         val host = urlInput.text.toString().trim().toHttpUrlOrNull()?.host
-        KeyChain.choosePrivateKeyAlias(this, this, null, null, host, -1, certAlias)
+        val current = (certificate as? ClientCertificateSource.KeyChainAlias)?.alias
+        KeyChain.choosePrivateKeyAlias(this, this, null, null, host, -1, current)
     }
 
-    /** The KeyChain's answer is the alias; the key itself never enters this process. */
     override fun alias(alias: String?) {
         // A null alias means the chooser was dismissed, which is not a request to forget the alias.
         if (alias == null) return
-        certAlias = alias
-        certAliasView.text = getString(R.string.certificate_selected, alias)
+        // One identity, not two: choosing an alias abandons a picked file.
+        discardPendingImport()
+        certificate = ClientCertificateSource.KeyChainAlias(alias)
+        importedInfo = null
+        refreshCertificateView()
     }
 
-    private fun clearCertificate() {
-        certAlias = null
-        certAliasView.setText(R.string.no_certificate)
+    /**
+     * Opens the system picker for anything at all.
+     *
+     * `.p12` has no MIME type a picker can be trusted with — it arrives as `application/x-pkcs12`,
+     * as `application/octet-stream`, or as nothing at all — so the filter is left off and the
+     * file's own first byte decides whether it is an archive. That verdict is then about the file:
+     * a passphrase prompt for something that was never a PKCS#12 file blames the wrong thing.
+     */
+    private fun importCertificate() {
+        openDocument.launch(arrayOf("*/*"))
     }
+
+    private fun readArchive(uri: Uri) {
+        executor.execute {
+            val archive = try {
+                contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: throw IllegalStateException("the picked file could not be opened")
+            } catch (e: Exception) {
+                val message = getString(R.string.certificate_unreadable, e.javaClass.simpleName)
+                main.post { if (isActive()) showCertificateFailure(message) }
+                return@execute
+            }
+            main.post {
+                if (isActive()) askCertificatePassphrase(archive, retry = false) { holdForImport(archive, it) }
+            }
+        }
+    }
+
+    /**
+     * The passphrase that opens the picked file, asked for once and used once: it is never stored,
+     * and the archive is re-wrapped under a random passphrase this app generates. A passphrase
+     * chosen for a file is one the user has almost certainly used somewhere else.
+     */
+    private fun askCertificatePassphrase(archive: ByteArray, retry: Boolean, onPassphrase: (CharArray) -> Unit) {
+        val view = layoutInflater.inflate(R.layout.dialog_passphrase, null)
+        view.findViewById<TextView>(R.id.passphrase_note).setText(R.string.certificate_passphrase_note)
+        val input = view.findViewById<EditText>(R.id.passphrase_input)
+        input.hint = getString(R.string.certificate_passphrase)
+        // One field: an import opens an existing file, so there is nothing to confirm against.
+        view.findViewById<View>(R.id.passphrase_repeat).visibility = View.GONE
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(if (retry) R.string.certificate_wrong_passphrase_title else R.string.import_certificate)
+            .setView(view)
+            .setPositiveButton(R.string.import_start, null)
+            // Cancel changes nothing: an archive held from an earlier attempt stays held, and the
+            // section keeps describing it until the user replaces or clears the certificate.
+            .setNegativeButton(R.string.cancel, null)
+            .create()
+        dialog.show()
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val passphrase = input.text.toString()
+            if (passphrase.isEmpty()) {
+                input.error = getString(R.string.passphrase_required)
+                return@setOnClickListener
+            }
+            dialog.dismiss()
+            onPassphrase(passphrase.toCharArray())
+        }
+    }
+
+    /**
+     * Keeps a picked archive until the Account exists to hold it.
+     *
+     * The re-wrapped archive goes into the Account's own userdata through the CredentialStore, and
+     * an Account this screen has not saved yet has no userdata to write to — so the import runs on
+     * save, and a form the user abandons imports nothing. The passphrase travels with it in memory
+     * only, and is dropped by [onDestroy] if the form is given up.
+     *
+     * A retype arrives here with the archive that is already held, so the handover must not zero it:
+     * only a superseded archive — a different file — is wiped.
+     */
+    private fun holdForImport(archive: ByteArray, passphrase: CharArray) {
+        pendingImport?.let { held ->
+            if (held.archive !== archive) held.archive.fill(0)
+            held.passphrase.fill('\u0000')
+        }
+        pendingImport = PendingImport(archive, passphrase)
+        // The two sources are alternatives: a picked file replaces a KeyChain alias.
+        certificate = null
+        importedInfo = null
+        refreshCertificateView()
+    }
+
+    /**
+     * Forgets whichever source is selected. What the Account actually holds follows on save: a
+     * record that names no certificate is what makes an imported archive unreachable, and the
+     * archive is deleted there — see [installCertificate].
+     */
+    private fun clearCertificate() {
+        discardPendingImport()
+        certificate = null
+        importedInfo = null
+        refreshCertificateView()
+    }
+
+    /** Reads back what an Account's imported identity says about itself; none of it is a secret. */
+    private fun readImportedInfo() {
+        val label = labelInput.text.toString().trim()
+        if (label.isEmpty()) return
+        executor.execute {
+            val info = try {
+                UiDependencies.clientCertificateStore(this).info(Account(label, ACCOUNT_TYPE))
+            } catch (e: Exception) {
+                // An archive that cannot be read by its own app is reported, not crashed on: the
+                // store deletes what it cannot parse, and the user is told to import the file again.
+                null
+            }
+            main.post {
+                if (!isActive()) return@post
+                importedInfo = info
+                refreshCertificateView()
+            }
+        }
+    }
+
+    /**
+     * One place that decides what the certificate section says, so that no path — picking, clearing,
+     * a failed import, a restored screen — can leave it describing a certificate that is not there.
+     */
+    private fun refreshCertificateView() {
+        val pending = pendingImport
+        val source = certificate
+        val info = importedInfo
+        when {
+            pending != null -> {
+                showCertificateStatus(getString(R.string.certificate_import_pending))
+                showCertificateDetails(null, warn = false)
+            }
+
+            source is ClientCertificateSource.KeyChainAlias -> {
+                showCertificateStatus(getString(R.string.certificate_keychain, source.alias))
+                showCertificateDetails(null, warn = false)
+            }
+
+            source is ClientCertificateSource.Imported -> {
+                // An expired certificate is imported and flagged, never refused: whether it is
+                // still accepted is the server's answer, and this screen cannot give it.
+                showCertificateStatus(
+                    getString(
+                        if (info == null) R.string.certificate_imported_missing else R.string.certificate_imported,
+                    ),
+                )
+                showCertificateDetails(info?.let { certificateDetails(this, it) }, warn = info?.expired == true)
+            }
+
+            else -> {
+                showCertificateStatus(getString(R.string.no_certificate))
+                showCertificateDetails(null, warn = false)
+            }
+        }
+    }
+
+    private fun showCertificateStatus(text: String, failed: Boolean = false) {
+        certStatusView.text = text
+        certStatusView.setTextColor(if (failed) warningColor() else certStatusColor)
+    }
+
+    private fun showCertificateDetails(text: String?, warn: Boolean) {
+        certDetailsView.visibility = if (text == null) View.GONE else View.VISIBLE
+        certDetailsView.text = text.orEmpty()
+        certDetailsView.setTextColor(if (warn) warningColor() else certDetailsColor)
+    }
+
+    /**
+     * The four import outcomes, each named for what to do next. Collapsing them into "the import
+     * failed" would throw away the distinction the parse exists to make: a wrong passphrase is
+     * retyped, a file that is not an archive is replaced, and a file with no key is neither.
+     *
+     * Whatever the outcome, the screen ends up holding the identity the Account holds — [prior] when
+     * nothing was imported. A screen that forgot an identity it still had would delete it on the
+     * next save, which is the one way a mistyped passphrase could cost a working certificate.
+     */
+    private fun reportImport(result: CertificateImportResult?, prior: ClientCertificateSource?) {
+        certificate = if (result is CertificateImportResult.Success) {
+            ClientCertificateSource.Imported
+        } else {
+            prior
+        }
+        importedInfo = (result as? CertificateImportResult.Success)?.info
+        // Only a wrong passphrase leaves the file worth keeping: every other outcome either used it
+        // or proved it is not one this app can use, so the held archive goes with it.
+        if (result !is CertificateImportResult.WrongPassphrase) discardPendingImport()
+        when (result) {
+            // Nothing was imported and the reason has already been reported where it happened.
+            null -> refreshCertificateView()
+            is CertificateImportResult.Success -> refreshCertificateView()
+            CertificateImportResult.NotAPkcs12 ->
+                showCertificateFailure(getString(R.string.certificate_not_pkcs12))
+
+            CertificateImportResult.NoPrivateKey ->
+                showCertificateFailure(getString(R.string.certificate_no_private_key))
+
+            CertificateImportResult.WrongPassphrase -> {
+                showCertificateFailure(getString(R.string.certificate_wrong_passphrase))
+                offerRetype()
+            }
+        }
+    }
+
+    /**
+     * A wrong passphrase is the one outcome the user can fix on the spot, so the retyped passphrase
+     * goes straight back through the one import path there is: the Account exists by the time an
+     * import can fail, and the check that follows reports what the server makes of the identity.
+     */
+    private fun offerRetype() {
+        val archive = pendingImport?.archive ?: return
+        AlertDialog.Builder(this)
+            .setTitle(R.string.certificate_wrong_passphrase_title)
+            .setMessage(R.string.certificate_wrong_passphrase_message)
+            .setPositiveButton(R.string.certificate_retype) { _, _ ->
+                askCertificatePassphrase(archive, retry = true) { passphrase ->
+                    holdForImport(archive, passphrase)
+                    save()
+                }
+            }
+            .setNegativeButton(R.string.cancel) { _, _ ->
+                // Dropping the file is the honest answer to "no": nothing is left waiting to import.
+                discardPendingImport()
+                refreshCertificateView()
+            }
+            .show()
+    }
+
+    private fun showCertificateFailure(message: String) {
+        showCertificateStatus(message, failed = true)
+        showCertificateDetails(null, warn = false)
+    }
+
+    /**
+     * Drops a held archive and the passphrase that opened it: both a file the user gave up on and
+     * the passphrase typed for it are of no further use here.
+     */
+    private fun discardPendingImport() {
+        pendingImport?.let {
+            it.passphrase.fill('\u0000')
+            it.archive.fill(0)
+        }
+        pendingImport = null
+    }
+
+    /** Material's error colour: nothing in this section is verified here, so warning is all it has. */
+    private fun warningColor(): Int =
+        MaterialColors.getColor(certStatusView, com.google.android.material.R.attr.colorError)
 
     // ------------------------------------------------------------ password
 
@@ -306,9 +602,11 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         setBusy(true)
         executor.execute {
             val store = UiDependencies.accountStore(this)
+            val certificates = UiDependencies.clientCertificateStore(this)
+            val account = Account(label, ACCOUNT_TYPE)
             val storedSecrets = if (needsStoredSecrets) {
                 try {
-                    store.load(Account(label, ACCOUNT_TYPE))
+                    store.load(account)
                 } catch (e: CredentialsUnreadableException) {
                     // Writing blanks is worse than refusing: this is exactly §5 class 5.
                     val error = credentialsUnreadable(e)
@@ -318,11 +616,14 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
             } else {
                 null
             }
-            val davAccount = DavAccount(
+            // The record as it stands, for the one decision that has to compare against it: an
+            // identity that is replaced or dropped has to be dealt with at the store too.
+            val prior = store.list().firstOrNull { it.label == label }?.certificate
+            var davAccount = DavAccount(
                 label = label,
                 baseUrl = parsed.toString(),
                 headers = readHeaders(storedSecrets?.headers.orEmpty()),
-                certAlias = certAlias,
+                certificate = certificate,
                 username = typedUsername,
                 password = when {
                     typedPassword.isNotEmpty() -> typedPassword
@@ -337,6 +638,7 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
                 main.post { if (isActive()) reportFailure(message, message) }
                 return@execute
             }
+            davAccount = installCertificate(store, certificates, account, davAccount, prior)
             main.post { if (isActive()) onStored(davAccount) }
             // The check is a report, not a condition: the account is already saved either way.
             val outcome = DavProbe.propfind(
@@ -348,6 +650,70 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
             )
             main.post { if (isActive()) showOutcome(outcome) }
         }
+    }
+
+    /**
+     * Applies the certificate this form holds to the Account that now exists to hold it, and answers
+     * with the Account to carry on with.
+     *
+     * The order is the point: a re-wrapped archive is written into the Account's own userdata, which
+     * an Account that has not been registered does not have. A failed import leaves the Account as
+     * it was — a mistyped passphrase must not cost an identity that was already working — and
+     * dropping an imported identity deletes its archive, which nothing else can reach.
+     *
+     * @return [saved], or a copy naming the certificate that is now in force.
+     */
+    private fun installCertificate(
+        store: AccountStore,
+        certificates: ClientCertificateStore,
+        account: Account,
+        saved: DavAccount,
+        prior: ClientCertificateSource?,
+    ): DavAccount {
+        val pending = pendingImport
+        if (pending == null) {
+            if (prior is ClientCertificateSource.Imported &&
+                saved.certificate !is ClientCertificateSource.Imported
+            ) {
+                // A credential can be replaced, never revealed — including by leaving it behind.
+                certificates.remove(account)
+            }
+            return saved
+        }
+        var failure: String? = null
+        val result = try {
+            certificates.import(account, pending.archive, pending.passphrase)
+        } catch (e: Exception) {
+            failure = e.javaClass.simpleName
+            null
+        } finally {
+            // The user's passphrase is used once and dropped: the archive is re-wrapped, and this
+            // is the one secret on the screen most likely to be reused elsewhere. The archive is
+            // kept for now — a wrong passphrase is retyped against the same file.
+            pending.passphrase.fill('\u0000')
+        }
+        val applied = if (result is CertificateImportResult.Success) {
+            saved.copy(certificate = ClientCertificateSource.Imported)
+        } else {
+            // Whatever the Account had before this save, it still has: it is not the import's loss.
+            saved.copy(certificate = prior)
+        }
+        var saveFailure: String? = null
+        try {
+            store.save(applied)
+        } catch (e: Exception) {
+            saveFailure = e.javaClass.simpleName
+        }
+        main.post {
+            if (!isActive()) return@post
+            reportImport(result, prior)
+            failure?.let { showCertificateFailure(getString(R.string.certificate_import_failed, it)) }
+            saveFailure?.let {
+                val message = getString(R.string.save_failed, it)
+                reportFailure(message, message)
+            }
+        }
+        return if (saveFailure == null) applied else saved
     }
 
     private fun hasEmptyHeaderValue(): Boolean {
@@ -414,6 +780,13 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
 
     private fun isActive(): Boolean = !isFinishing && !isDestroyed
 
+    /**
+     * A picked `.p12` and the passphrase that opened it, held from the moment the file is chosen
+     * until the Account exists to hold the re-wrapped copy. Deliberately not instance state: the
+     * passphrase is a secret, and a rotation means the file is picked again rather than kept.
+     */
+    private class PendingImport(val archive: ByteArray, val passphrase: CharArray)
+
     private companion object {
         /**
          * Header names for an identity-aware proxy's service token. Names, never values: the value
@@ -424,7 +797,10 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         const val KEY_URL = "url"
         const val KEY_LABEL = "label"
         const val KEY_USERNAME = "username"
+        const val KEY_CERT_SOURCE = "certSource"
         const val KEY_CERT_ALIAS = "certAlias"
+        const val CERT_KEYCHAIN = "keychain"
+        const val CERT_IMPORTED = "imported"
         const val KEY_STORED = "stored"
         const val KEY_PASSWORD_CLEARED = "passwordCleared"
         const val KEY_HEADER_NAMES = "headerNames"

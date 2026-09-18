@@ -30,10 +30,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import java.util.UUID
 import java.util.concurrent.Executors
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import xyz.satr.davprovider.R
+import xyz.satr.davprovider.core.ClientCertificateInfo
+import xyz.satr.davprovider.core.ClientCertificateSource
+import xyz.satr.davprovider.core.ClientCertificateStore
 import xyz.satr.davprovider.core.CredentialsUnreadableException
 import xyz.satr.davprovider.core.DavAccount
 import xyz.satr.davprovider.core.DavCollection
@@ -119,6 +121,8 @@ class SettingsActivity : AppCompatActivity() {
         val davAccount: DavAccount,
         val account: Account,
         val report: AccountReport?,
+        /** The certificate line, already rendered: reading an imported identity is not free. */
+        val certificate: String?,
     )
 
     private fun refresh() {
@@ -130,11 +134,45 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun readAccounts(): List<AccountScreen> {
         val store = UiDependencies.accountStore(this)
+        val certificates = UiDependencies.clientCertificateStore(this)
         val status = SyncStatusStore(this)
         return store.list().map { davAccount ->
-            AccountScreen(davAccount, davAccount.androidAccount, status.read(davAccount.androidAccount))
+            AccountScreen(
+                davAccount = davAccount,
+                account = davAccount.androidAccount,
+                report = status.read(davAccount.androidAccount),
+                certificate = certificateLabel(certificates, davAccount),
+            )
         }
     }
+
+    /**
+     * What the Account's certificate is, in one line, or null when it has none.
+     *
+     * A KeyChain alias is named as an alias and an imported identity by what it says about itself,
+     * because the two fail differently: an alias is a name for a key this app never sees, and an
+     * imported archive is key material this app is answerable for.
+     */
+    private fun certificateLabel(certificates: ClientCertificateStore, davAccount: DavAccount): String? {
+        val source = davAccount.certificate ?: return null
+        val info = if (source is ClientCertificateSource.Imported) {
+            readCertificateInfo(certificates, davAccount.androidAccount)
+        } else {
+            null
+        }
+        return certificateLine(this, source, info)
+    }
+
+    /**
+     * Null when the imported archive cannot be read — after a restore, or after the store deleted a
+     * copy that stopped parsing. The record stays as it is and the line says what to do about it.
+     */
+    private fun readCertificateInfo(certificates: ClientCertificateStore, account: Account): ClientCertificateInfo? =
+        try {
+            certificates.info(account)
+        } catch (e: Exception) {
+            null
+        }
 
     private fun populate(screens: List<AccountScreen>) {
         accountsContainer.removeAllViews()
@@ -162,6 +200,9 @@ class SettingsActivity : AppCompatActivity() {
             getString(R.string.status_line, statusLabel(this, status), statusDetail(this, screen.report))
         card.findViewById<TextView>(R.id.account_last_sync).text =
             lastSyncLabel(this, screen.report?.lastSyncAt ?: 0L)
+        val certificate = card.findViewById<TextView>(R.id.account_certificate)
+        certificate.text = screen.certificate.orEmpty()
+        certificate.visibility = if (screen.certificate == null) View.GONE else View.VISIBLE
 
         val collections = card.findViewById<LinearLayout>(R.id.account_collections)
         card.findViewById<TextView>(R.id.account_no_collections).visibility =
@@ -265,9 +306,17 @@ class SettingsActivity : AppCompatActivity() {
     private fun checkCollections(screen: AccountScreen) {
         executor.execute {
             val loaded = loadAccount(screen.account) ?: return@execute
-            val outcome = CollectionDiscovery.discover(loaded)
+            val outcome = CollectionDiscovery.discover(
+                factory = UiDependencies.httpClientFactory(this),
+                classifier = UiDependencies.errorClassifier(),
+                davAccount = loaded,
+            )
             if (!outcome.completed) {
-                main.post { if (isActive()) showMessage(getString(R.string.discovery_not_connected)) }
+                // §8: every attempt is surfaced with its outcome, including the ones that failed —
+                // which is the whole difference between this and "couldn't find any services".
+                main.post {
+                    if (isActive()) showTextDialog(getString(R.string.refresh_collections), outcome.notes.joinToString("\n"))
+                }
                 return@execute
             }
             val merged = CollectionDiscovery.merge(screen.davAccount.collections, outcome.collections)
@@ -280,12 +329,11 @@ class SettingsActivity : AppCompatActivity() {
             val added = merged.size - screen.davAccount.collections.size
             main.post {
                 if (!isActive()) return@post
-                // §8: every attempt is surfaced with its outcome, not just the final one.
-                if (outcome.notes.isEmpty()) {
-                    showMessage(getString(R.string.collections_checked, merged.size, added))
-                } else {
-                    showTextDialog(getString(R.string.refresh_collections), outcome.notes.joinToString("\n"))
-                }
+                showTextDialog(
+                    getString(R.string.refresh_collections),
+                    (listOf(getString(R.string.collections_checked, merged.size, added)) + outcome.notes)
+                        .joinToString("\n"),
+                )
                 refresh()
             }
         }
@@ -331,7 +379,7 @@ class SettingsActivity : AppCompatActivity() {
                 return@execute
             }
             val collection = DavCollection(
-                id = collectionId(screen.davAccount.label, parsed.toString()),
+                id = CollectionDiscovery.collectionId(parsed.toString()),
                 url = parsed.toString(),
                 type = type,
                 displayName = description.displayName,
@@ -398,10 +446,10 @@ class SettingsActivity : AppCompatActivity() {
     private fun diagnoseVariants(loaded: DavAccount): List<Pair<String, DavAccount>> = listOf(
         getString(R.string.diagnose_variant_with_credentials) to loaded,
         getString(R.string.diagnose_variant_without_headers) to loaded.copy(headers = emptyList()),
-        getString(R.string.diagnose_variant_without_certificate) to loaded.copy(certAlias = null),
+        getString(R.string.diagnose_variant_without_certificate) to loaded.copy(certificate = null),
         getString(R.string.diagnose_variant_unauthenticated) to loaded.copy(
             headers = emptyList(),
-            certAlias = null,
+            certificate = null,
             username = null,
             password = null,
         ),
@@ -506,19 +554,28 @@ class SettingsActivity : AppCompatActivity() {
         executor.execute {
             val store = UiDependencies.accountStore(this)
             val loaded = ArrayList<DavAccount>()
+            val certificates = HashMap<String, AccountExport.ImportedCertificate>()
             val unreadable = ArrayList<String>()
             store.list().forEach { listed ->
                 // list() never touches the Keystore and returns header names with empty values, so
                 // an export built on it would ship blanks; load() is the only source of secrets.
                 try {
-                    store.load(listed.androidAccount)?.let { loaded += it }
+                    store.load(listed.androidAccount)?.let { account ->
+                        loaded += account
+                        // An imported identity is the one credential a restore cannot rebuild, so it
+                        // is carried whole: the archive this app re-wrapped, and its own passphrase.
+                        if (account.certificate is ClientCertificateSource.Imported) {
+                            UiDependencies.importedCertificate(this, listed.androidAccount)
+                                ?.let { certificates[account.label] = it }
+                        }
+                    }
                 } catch (e: CredentialsUnreadableException) {
                     // Refusing to write blanks beats writing a file that fails as a bad password.
                     unreadable += listed.label
                 }
             }
             try {
-                val document = AccountExport.encode(loaded, passphrase.toCharArray())
+                val document = AccountExport.encode(loaded, certificates, passphrase.toCharArray())
                 contentResolver.openOutputStream(uri)?.use { it.write(document.toByteArray(Charsets.UTF_8)) }
                     ?: error("the picked file could not be opened for writing")
             } catch (e: Exception) {
@@ -548,7 +605,7 @@ class SettingsActivity : AppCompatActivity() {
                 main.post { if (isActive()) showMessage(message) }
                 return@execute
             }
-            val accounts = try {
+            val entries = try {
                 AccountExport.decode(document, passphrase.toCharArray())
             } catch (e: AccountExport.UnknownFormatVersionException) {
                 // Never guessed: a file from a format this build does not know is refused whole.
@@ -565,16 +622,28 @@ class SettingsActivity : AppCompatActivity() {
             }
             val store = UiDependencies.accountStore(this)
             val existing = store.list().map { it.label }.toSet()
-            val skipped = accounts.filter { it.label in existing }.map { it.label }
+            val skipped = entries.filter { it.account.label in existing }.map { it.account.label }
             val failed = ArrayList<String>()
+            val withoutCertificate = ArrayList<String>()
             var imported = 0
-            accounts.filterNot { it.label in existing }.forEach { account ->
+            entries.filterNot { it.account.label in existing }.forEach { entry ->
+                val importedCertificate = entry.importedCertificate
+                // A record naming an imported identity the file does not carry would claim an
+                // identity nothing can produce, so it is imported without one and said out loud.
+                val stripped = entry.account.certificate is ClientCertificateSource.Imported &&
+                    importedCertificate == null
                 try {
+                    val account = if (stripped) entry.account.copy(certificate = null) else entry.account
                     store.save(account)
+                    // Written after the Account exists, which is where the archive belongs.
+                    if (importedCertificate != null) {
+                        UiDependencies.restoreImportedCertificate(this, account.androidAccount, importedCertificate)
+                    }
+                    if (stripped) withoutCertificate += entry.account.label
                     imported++
                 } catch (e: Exception) {
                     // One Account the store refuses must not discard the rest of the file.
-                    failed += account.label
+                    failed += entry.account.label
                 }
             }
             val importedCount = imported
@@ -584,6 +653,9 @@ class SettingsActivity : AppCompatActivity() {
                 // An Account already on this device keeps what it has: importing is additive.
                 if (skipped.isNotEmpty()) {
                     showMessage(getString(R.string.import_skipped, skipped.size, skipped.joinToString(", ")))
+                }
+                if (withoutCertificate.isNotEmpty()) {
+                    showMessage(getString(R.string.import_certificate_missing, withoutCertificate.joinToString(", ")))
                 }
                 if (failed.isNotEmpty()) {
                     showMessage(getString(R.string.import_failed_accounts, failed.size, failed.joinToString(", ")))
@@ -686,13 +758,6 @@ class SettingsActivity : AppCompatActivity() {
     private fun showMessage(text: String) {
         Toast.makeText(this, text, Toast.LENGTH_LONG).show()
     }
-
-    /**
-     * The id is derived from the account label and the URL rather than drawn at random, so adding
-     * the same URL twice yields the same Collection: this id is what lands in `RawContacts.SYNC3`.
-     */
-    private fun collectionId(label: String, url: String): String =
-        UUID.nameUUIDFromBytes("$label\n$url".toByteArray(Charsets.UTF_8)).toString()
 
     private fun isActive(): Boolean = !isFinishing && !isDestroyed
 

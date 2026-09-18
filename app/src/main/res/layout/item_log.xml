@@ -4,11 +4,14 @@
 
   Monospace, because these are lines out of a file and columns that line up are how they are
   compared; selectable, because the reader's next move is usually to paste one somewhere.
+
+  The two ranks of text are the theme's own on-surface and on-surface-variant rather than colours of
+  their own, so an entry reads the same way in light and dark mode as the rest of the screen; the row
+  itself paints nothing, so the card behind it stays the one surface the output is printed on.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:background="@color/term_bg"
     android:orientation="vertical"
     android:paddingStart="14dp"
     android:paddingTop="6dp"
@@ -22,7 +25,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:fontFamily="monospace"
-        android:textColor="@color/term_text"
+        android:textColor="?attr/colorOnSurface"
         android:textIsSelectable="true"
         android:textSize="12sp" />
 
@@ -32,7 +35,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="2dp"
         android:fontFamily="monospace"
-        android:textColor="@color/term_dim"
+        android:textColor="?attr/colorOnSurfaceVariant"
         android:textIsSelectable="true"
         android:textSize="12sp" />
 

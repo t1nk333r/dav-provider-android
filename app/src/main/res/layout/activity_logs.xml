@@ -1,39 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The log as a terminal: a window with a dotted title bar, and the entries as its output.
+  The log as a terminal: a titled panel, and the entries as its output.
 
   The theme has no window action bar, so the toolbar is this screen's own. The four questions a
   reader asks of a ring buffer — what does it say, which Account, which level, which of the two
   kinds — are controls that stay visible rather than menu items that have to be found, because what
   the reader filtered to is the question they are about to read.
 
-  Those controls are styled into the terminal's palette rather than left as light Material fields on
-  a dark screen, and the states the body can be in — reading, nothing recorded, nothing matching,
-  unreadable — are drawn inside the window, because a grey-on-white empty state beside a dark
-  terminal reads as a broken screen rather than an empty log.
+  The chrome around the window is the app's own: the toolbar, the field, the selectors and the button
+  are the same themed components the other screens show, so this reads as a screen of this app rather
+  than a window borrowed from another program. What stays terminal is the output — monospace in
+  aligned columns, the level designators' own colours — and it is printed on
+  one of the app's cards rather than on a surface of its own, so the reader's eye lands on the lines
+  instead of on the frame around them.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/term_bg"
     android:fitsSystemWindows="true"
-    android:orientation="vertical"
-    android:theme="@style/Theme.DavProvider.Terminal">
+    android:orientation="vertical">
 
     <com.google.android.material.appbar.AppBarLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@color/term_bar"
         app:elevation="0dp">
 
         <com.google.android.material.appbar.MaterialToolbar
             android:id="@+id/log_toolbar"
             android:layout_width="match_parent"
-            android:layout_height="?attr/actionBarSize"
-            android:background="@color/term_bar"
-            app:navigationIconTint="@color/term_text"
-            app:titleTextColor="@color/term_text" />
+            android:layout_height="?attr/actionBarSize" />
 
     </com.google.android.material.appbar.AppBarLayout>
 
@@ -49,28 +45,15 @@
         <!-- Each row now holds at most two controls: a spinner's selected value has to stay legible
              on a narrow screen, and three of them on one line are three ellipses that say nothing
              about which one filters what. -->
-        <com.google.android.material.textfield.TextInputLayout
-            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.Dense"
+        <EditText
+            android:id="@+id/log_search"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:hint="@string/log_search_hint"
-            app:boxBackgroundColor="@color/term_bar"
-            app:boxStrokeColor="@color/term_border"
-            app:hintTextColor="@color/term_dim">
-
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/log_search"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:fontFamily="monospace"
-                android:imeOptions="actionSearch"
-                android:inputType="text"
-                android:maxLines="1"
-                android:textColor="@color/term_text"
-                android:textColorHint="@color/term_dim"
-                android:textSize="13sp" />
-
-        </com.google.android.material.textfield.TextInputLayout>
+            android:imeOptions="actionSearch"
+            android:importantForAutofill="no"
+            android:inputType="text"
+            android:maxLines="1" />
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -78,12 +61,14 @@
             android:layout_marginTop="8dp"
             android:orientation="horizontal">
 
+            <!-- The open list is drawn on the theme's own menu surface: the spinner's default popup
+                 background is a translucent grey that belongs to no palette this app uses. -->
             <androidx.appcompat.widget.AppCompatSpinner
                 android:id="@+id/log_level_filter"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:popupBackground="@drawable/term_popup" />
+                android:popupBackground="?attr/popupMenuBackground" />
 
             <androidx.appcompat.widget.AppCompatSpinner
                 android:id="@+id/log_kind_filter"
@@ -91,7 +76,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
                 android:layout_weight="1"
-                android:popupBackground="@drawable/term_popup" />
+                android:popupBackground="?attr/popupMenuBackground" />
 
         </LinearLayout>
 
@@ -106,20 +91,16 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:popupBackground="@drawable/term_popup" />
+                android:popupBackground="?attr/popupMenuBackground" />
 
             <!-- Labelled with the order it is currently in, so the direction is readable without
                  opening anything. -->
-            <com.google.android.material.button.MaterialButton
+            <Button
                 android:id="@+id/log_sort"
-                style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
-                android:fontFamily="monospace"
-                android:text="@string/log_sort_newest"
-                android:textColor="@color/term_text"
-                app:strokeColor="@color/term_border" />
+                android:text="@string/log_sort_newest" />
 
         </LinearLayout>
 
@@ -128,143 +109,128 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:fontFamily="monospace"
-            android:textColor="@color/term_dim"
-            android:textSize="12sp" />
+            android:textAppearance="?attr/textAppearanceBodySmall" />
 
     </LinearLayout>
 
-    <!-- The window: its bar, the hairline under it, and the body the entries are printed on. The
-         one dp of padding is what keeps the body's own background from covering the outline. -->
-    <LinearLayout
+    <!-- The window: its bar, the hairline under it, and the body the entries are printed on. Its fill
+         and its outline are the theme's, the same ones any other card in this app is drawn with. -->
+    <com.google.android.material.card.MaterialCardView
+        style="?attr/materialCardViewOutlinedStyle"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_marginStart="12dp"
         android:layout_marginEnd="12dp"
-        android:layout_weight="1"
-        android:background="@drawable/term_container"
-        android:orientation="vertical"
-        android:padding="1dp">
+        android:layout_weight="1">
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:background="@drawable/term_title_bar"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingStart="12dp"
-            android:paddingTop="8dp"
-            android:paddingEnd="12dp"
-            android:paddingBottom="8dp">
-
-            <View
-                android:layout_width="8dp"
-                android:layout_height="8dp"
-                android:background="@drawable/term_dot_red" />
-
-            <View
-                android:layout_width="8dp"
-                android:layout_height="8dp"
-                android:layout_marginStart="6dp"
-                android:background="@drawable/term_dot_yellow" />
-
-            <View
-                android:layout_width="8dp"
-                android:layout_height="8dp"
-                android:layout_marginStart="6dp"
-                android:background="@drawable/term_dot_green" />
-
-            <!-- What is on screen, named: the file this terminal is showing. -->
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="12dp"
-                android:layout_weight="1"
-                android:ellipsize="end"
-                android:fontFamily="monospace"
-                android:maxLines="1"
-                android:text="@string/log_file_name"
-                android:textColor="@color/term_dim"
-                android:textSize="12sp" />
-
-        </LinearLayout>
-
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="@color/term_border" />
-
-        <FrameLayout
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1">
-
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/log_list"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:clipToPadding="false"
-                android:paddingTop="6dp"
-                android:paddingBottom="10dp"
-                android:scrollbars="vertical" />
+            android:layout_height="match_parent"
+            android:orientation="vertical">
 
             <LinearLayout
-                android:id="@+id/log_loading"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="center"
-                android:gravity="center"
-                android:orientation="vertical"
-                android:visibility="gone">
+                android:background="?attr/colorSurfaceVariant"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="12dp"
+                android:paddingTop="8dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="8dp">
 
-                <ProgressBar
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:indeterminate="true"
-                    android:indeterminateTint="@color/term_text" />
-
+                <!-- What is on screen, named: the file this terminal is showing. -->
                 <TextView
-                    android:layout_width="wrap_content"
+                    android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
+                    android:layout_weight="1"
+                    android:ellipsize="end"
                     android:fontFamily="monospace"
-                    android:text="@string/log_loading"
-                    android:textColor="@color/term_dim"
+                    android:maxLines="1"
+                    android:text="@string/log_file_name"
+                    android:textColor="?attr/colorOnSurfaceVariant"
                     android:textSize="12sp" />
 
             </LinearLayout>
 
-            <!-- Read-but-nothing, and read-but-nothing-matches: one view, because both are the absence of
-                 entries and the words are what tell them apart. -->
-            <TextView
-                android:id="@+id/log_message"
+            <View
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_gravity="center"
-                android:fontFamily="monospace"
-                android:gravity="center"
-                android:padding="24dp"
-                android:textColor="@color/term_dim"
-                android:textSize="12sp"
-                android:visibility="gone" />
+                android:layout_height="1dp"
+                android:background="?attr/colorOutline" />
 
-            <!-- An unreadable log is information, so it has its own state and says what failed. -->
-            <TextView
-                android:id="@+id/log_error"
+            <FrameLayout
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_gravity="center"
-                android:fontFamily="monospace"
-                android:gravity="center"
-                android:padding="24dp"
-                android:textColor="@color/level_error"
-                android:textIsSelectable="true"
-                android:textSize="12sp"
-                android:visibility="gone" />
+                android:layout_height="0dp"
+                android:layout_weight="1">
 
-        </FrameLayout>
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/log_list"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:clipToPadding="false"
+                    android:paddingTop="6dp"
+                    android:paddingBottom="10dp"
+                    android:scrollbars="vertical" />
 
-    </LinearLayout>
+                <LinearLayout
+                    android:id="@+id/log_loading"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
+                    <ProgressBar
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:indeterminate="true"
+                        android:indeterminateTint="?attr/colorPrimary" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:fontFamily="monospace"
+                        android:text="@string/log_loading"
+                        android:textColor="?attr/colorOnSurfaceVariant"
+                        android:textSize="12sp" />
+
+                </LinearLayout>
+
+                <!-- Read-but-nothing, and read-but-nothing-matches: one view, because both are the absence of
+                     entries and the words are what tell them apart. -->
+                <TextView
+                    android:id="@+id/log_message"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:fontFamily="monospace"
+                    android:gravity="center"
+                    android:padding="24dp"
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textSize="12sp"
+                    android:visibility="gone" />
+
+                <!-- An unreadable log is information, so it has its own state and says what failed. -->
+                <TextView
+                    android:id="@+id/log_error"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:fontFamily="monospace"
+                    android:gravity="center"
+                    android:padding="24dp"
+                    android:textColor="?attr/colorError"
+                    android:textIsSelectable="true"
+                    android:textSize="12sp"
+                    android:visibility="gone" />
+
+            </FrameLayout>
+
+        </LinearLayout>
+
+    </com.google.android.material.card.MaterialCardView>
 
     <!-- The dialog put this above the entries; here it is a caption that opens on a tap, because on
          a small screen a paragraph that is always fully open costs the list more than it is worth.
@@ -281,7 +247,7 @@
         android:paddingEnd="12dp"
         android:paddingBottom="12dp"
         android:text="@string/log_note"
-        android:textColor="@color/term_dim"
+        android:textColor="?attr/colorOnSurfaceVariant"
         android:textSize="12sp" />
 
 </LinearLayout>

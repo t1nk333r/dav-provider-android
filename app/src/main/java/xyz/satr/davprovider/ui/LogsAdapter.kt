@@ -1,6 +1,7 @@
 package xyz.satr.davprovider.ui
 
 import android.content.Context
+import android.graphics.Color
 import android.graphics.Typeface
 import android.provider.CalendarContract
 import android.provider.ContactsContract
@@ -16,6 +17,7 @@ import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.color.MaterialColors
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -167,11 +169,23 @@ internal fun logDetails(context: Context, entry: SyncLog.Entry): List<String> = 
  * say. Dim is what it is: a raw line the log kept as evidence.
  */
 internal fun logLevelColor(context: Context, entry: SyncLog.Entry): Int = when {
-    entry.kind == SyncLog.Kind.UNPARSED -> ContextCompat.getColor(context, R.color.term_dim)
+    entry.kind == SyncLog.Kind.UNPARSED -> dimTextColor(context)
     entry.level == SyncLog.Level.ERROR -> ContextCompat.getColor(context, R.color.level_error)
     entry.level == SyncLog.Level.WARN -> ContextCompat.getColor(context, R.color.level_warn)
     else -> ContextCompat.getColor(context, R.color.level_info)
 }
+
+/**
+ * The screen's second-rank text colour, as the theme resolves it rather than as a colour of its own:
+ * the Logs screen follows the app into light mode, so its dim text has to be the dim text every other
+ * screen is drawn with.
+ *
+ * A [MaterialColors] lookup is what reads an attribute the way a view would; [ContextCompat] cannot,
+ * because an attribute is not a resource. The fallback is unreachable under this app's theme, and grey
+ * rather than transparent so that a line would still be visible if it ever were reached.
+ */
+private fun dimTextColor(context: Context): Int =
+    MaterialColors.getColor(context, com.google.android.material.R.attr.colorOnSurfaceVariant, Color.GRAY)
 
 private fun logTimestamp(at: Instant): String = LOG_TIMESTAMP.format(at.atZone(ZoneId.systemDefault()))
 

@@ -1,33 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The log screen's colours, which are a terminal's rather than the theme's.
+  The log's own colours. Everything else on the screen — the background, the toolbar, the fields,
+  the buttons, the panel's fill and its outline, the two ranks of text — is the app's theme, so the
+  screen follows light and dark mode the way the rest of the app does.
 
-  The screen is one dark surface and the entries are the only thing on it that changes, so the
-  chrome around them is quieter than the output is. The three levels are deliberately the classic
-  red, yellow and green: a hundred lines are read by scanning for the red one, and nothing else on
-  this screen is allowed to compete with it. A line this build cannot read is dim rather than red,
-  because it is evidence the log holds rather than a failure the log reports.
+  These three are the exception, and are semantic rather than decorative: red, yellow and green say
+  ERROR, WARN and INFO, and a hundred lines are read by scanning for the red one. They are the same
+  three colours in either mode because they are read as meaning, not as style.
+
+  A line this build cannot read is not given one of these colours. It is dimmed with the theme's own
+  on-surface-variant instead, because it is a raw line the log kept as evidence rather than a
+  failure the log reports, and painting it yellow would claim the log called it a warning.
 -->
 <resources>
 
-    <!-- The terminal itself: the body it prints on, its title bar, and the one hairline that
-         separates the parts. -->
-    <color name="term_bg">#0D1117</color>
-    <color name="term_bar">#161B22</color>
-    <color name="term_border">#30363D</color>
-
-    <!-- Output text, and the second rank of it: timestamps, the facts under a line, captions. -->
-    <color name="term_text">#C9D1D9</color>
-    <color name="term_dim">#8B949E</color>
-
-    <!-- The level designators, and only they. -->
     <color name="level_error">#F85149</color>
     <color name="level_warn">#E3B341</color>
     <color name="level_info">#3FB950</color>
-
-    <!-- The title bar's three lights. -->
-    <color name="dot_red">#FF5F56</color>
-    <color name="dot_yellow">#FFBD2E</color>
-    <color name="dot_green">#27C93F</color>
 
 </resources>

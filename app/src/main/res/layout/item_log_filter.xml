@@ -2,19 +2,16 @@
 <!--
   One value of a filter: what the selector shows, and what the open list shows.
 
-  The colours are explicit rather than inherited because this view is inflated by an ArrayAdapter
-  holding the Activity's own context, which is not the dark overlay the screen is styled in — an
-  inherited colour here would be dark text on the terminal.
+  It is a themed text view like any other in the app — no colour of its own, so the open list and the
+  selected value are drawn in the same on-surface colour the rest of the screen uses, in either mode.
 -->
 <TextView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:ellipsize="end"
-    android:fontFamily="monospace"
     android:gravity="center_vertical"
     android:maxLines="1"
     android:minHeight="44dp"
     android:paddingStart="12dp"
     android:paddingEnd="28dp"
-    android:textColor="@color/term_text"
-    android:textSize="13sp" />
+    android:textAppearance="?attr/textAppearanceBodyMedium" />

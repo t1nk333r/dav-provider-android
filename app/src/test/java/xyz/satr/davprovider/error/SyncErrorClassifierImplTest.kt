@@ -126,15 +126,39 @@ class SyncErrorClassifierImplTest {
     }
 
     @Test
-    fun `an HTML block page is proxy interference`() {
+    fun `a 403 HTML block page reads as a proxy refusal, not interference`() {
         val body = "<!DOCTYPE html><html><body>Access denied</body></html>"
 
         val error = classifier.classify(evidence(body = body, httpStatus = 403, requestMethod = "PROPFIND"))
 
         assertEquals(ErrorClass.PROXY_INTERFERENCE, error.errorClass)
-        assertEquals("Something between the app and the server changed the response", error.summary)
+        assertEquals("The proxy refused this request before it reached the server", error.summary)
         assertEquals(body, error.firstBodyLine)
         assertNull(error.davCondition)
+    }
+
+    /**
+     * Observed against a real client-certificate-gated hostname: the certificate was sent and the
+     * proxy still refused. Saying so is what separates "the app never offered one" from "the proxy
+     * did not accept the one it got" — indistinguishable from the block page alone, which is the
+     * ambiguity this app exists to remove.
+     */
+    @Test
+    fun `a 403 block page with a certificate on the wire says the certificate was not accepted`() {
+        val error = classifier.classify(
+            evidence(
+                body = "<!DOCTYPE html><html><body>Access denied</body></html>",
+                httpStatus = 403,
+                requestMethod = "PROPFIND",
+                certificateOffered = true,
+            ),
+        )
+
+        assertEquals(ErrorClass.PROXY_INTERFERENCE, error.errorClass)
+        assertEquals(
+            "The proxy refused this request — a certificate was sent but not accepted",
+            error.summary,
+        )
     }
 
     @Test

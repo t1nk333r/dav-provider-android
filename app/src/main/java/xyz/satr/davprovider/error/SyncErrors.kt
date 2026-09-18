@@ -24,6 +24,22 @@ internal object ErrorSummary {
     const val MALFORMED_RESPONSE = "The server's response couldn't be understood"
     const val PROXY_INTERFERENCE = "Something between the app and the server changed the response"
 
+    /**
+     * A 403 behind an HTML body is the proxy refusing the request outright, which is a different
+     * user action from a middlebox mangling a response: check the rule on the hostname, not the
+     * network.
+     */
+    const val PROXY_REFUSED = "The proxy refused this request before it reached the server"
+
+    /**
+     * The same refusal with a certificate on the wire. Stating that the certificate was sent is
+     * what separates "the app never offered one" from "the proxy did not accept the one it got" —
+     * the two are indistinguishable from the block page alone, and that ambiguity is the reason
+     * this app exists.
+     */
+    const val PROXY_REFUSED_WITH_CERTIFICATE =
+        "The proxy refused this request — a certificate was sent but not accepted"
+
     /** Class 3 has no single line: the DAV condition the Origin sent names what it refused. */
     const val ORIGIN_REFUSED = "The server refused this request"
 

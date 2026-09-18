@@ -3,13 +3,13 @@
 
     <!-- Account setup -->
 
-    <string name="setup_intro">One account is one server. Only the base URL is required: a server that wants no credentials is legitimate, so nothing here is validated by rule.</string>
+    <string name="setup_intro">One account is one server. Only the base URL is required.</string>
     <string name="field_base_url">Base URL (required)</string>
     <string name="field_label">Label</string>
-    <string name="label_note">Defaults to the host. The label is the account identity, so saving a second account with the same label updates this one.</string>
+    <string name="label_note">Defaults to the host. Identifies the account.</string>
     <string name="label_locked">The label identifies the account. To configure the same server twice, remove this account first.</string>
     <string name="section_headers">Headers</string>
-    <string name="headers_note">Sent on every request for this account. Values are stored as secrets: they can be replaced, never shown again. Once the account exists, a row left empty keeps the value already stored, and deleting the row removes the header. A misspelled header name and a rejected token produce the same redirect, so both are spelled out here.</string>
+    <string name="headers_note">Sent on every request. Values are secrets: replaceable, never shown again. Empty row keeps the stored value.</string>
     <string name="add_header">Add header</string>
     <string name="header_name">Name</string>
     <string name="header_value">Value (secret)</string>
@@ -20,11 +20,11 @@
     <string name="certificate_selected">Certificate: %1$s</string>
     <string name="choose_certificate">Choose certificate</string>
     <string name="clear_certificate">Clear certificate</string>
-    <string name="certificate_note">Only the alias is stored; the key stays in the Android KeyChain. A restored device has no key for the alias, and the app reports that rather than an auth failure.</string>
+    <string name="certificate_note">Only the alias is stored; the key stays in the Android KeyChain.</string>
     <string name="section_credentials">Username and password</string>
     <string name="field_username">Username (optional)</string>
     <string name="field_password">Password (secret, optional)</string>
-    <string name="credentials_note">A username without a password is legal. Once the account exists, an empty password field keeps the stored password; use Clear password to remove it.</string>
+    <string name="credentials_note">Both optional. Empty password keeps the stored one.</string>
     <string name="clear_password">Clear password</string>
     <string name="password_will_be_removed">The stored password will be removed when you save.</string>
     <string name="save_account">Save account</string>

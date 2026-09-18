@@ -65,9 +65,19 @@ class SyncErrorClassifierImpl : SyncErrorClassifier {
             )
         }
 
-        // 4. HTML where a DAV response was expected: something in between rewrote the response.
+        // 4. HTML where a DAV response was expected: the request did not reach the Origin.
+        //
+        // A 403 here is a deliberate refusal by the proxy, not a rewritten response, and saying so
+        // matters: observed against a real client-certificate-gated hostname, where the certificate
+        // WAS sent and the proxy still refused. Reporting that as "something changed the response"
+        // sends the user hunting for a broken middlebox instead of an unaccepted certificate.
         if (isDavRequest(evidence.requestMethod) && evidence.looksLikeHtml()) {
-            return evidence.toError(ErrorClass.PROXY_INTERFERENCE, ErrorSummary.PROXY_INTERFERENCE)
+            val summary = when {
+                status == 403 && evidence.certificateOffered -> ErrorSummary.PROXY_REFUSED_WITH_CERTIFICATE
+                status == 403 -> ErrorSummary.PROXY_REFUSED
+                else -> ErrorSummary.PROXY_INTERFERENCE
+            }
+            return evidence.toError(ErrorClass.PROXY_INTERFERENCE, summary)
         }
 
         // 5. No response at all is the transport class, not a server verdict.

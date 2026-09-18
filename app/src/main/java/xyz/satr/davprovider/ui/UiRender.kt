@@ -53,11 +53,12 @@ internal fun statusLabel(context: Context, status: AccountStatus): String = cont
 
 internal fun statusDetail(context: Context, report: AccountReport?): String {
     if (report == null) return context.getString(R.string.status_detail_never_synced)
-    // A run-level failure is the reason for the status, and counts of zero would hide it.
-    report.summary?.let { return it }
+    // A run-level failure is the reason for the status, and counts of zero would hide it. The
+    // failing authority's, not the last run's: the last run may be the one that succeeded.
+    report.composedSummary?.let { return it }
     val considered = report.collections.filter { it.outcome != CollectionOutcome.SKIPPED }
     val failed = considered.count { it.outcome == CollectionOutcome.FAILED }
-    return when (report.status) {
+    return when (report.composedStatus) {
         AccountStatus.OK -> context.getString(R.string.status_detail_ok)
         AccountStatus.PARTIAL -> context.getString(R.string.status_detail_partial, failed, considered.size)
         AccountStatus.FAILED -> context.getString(R.string.status_detail_failed, considered.size)

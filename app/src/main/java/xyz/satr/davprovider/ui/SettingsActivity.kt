@@ -217,7 +217,7 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun accountCard(screen: AccountScreen, highlighted: Boolean): View {
         val card = LayoutInflater.from(this).inflate(R.layout.row_account, accountsContainer, false)
-        val status = screen.report?.status ?: AccountStatus.NEVER_SYNCED
+        val status = screen.report?.composedStatus ?: AccountStatus.NEVER_SYNCED
 
         val label = card.findViewById<TextView>(R.id.account_label)
         label.text = screen.davAccount.label

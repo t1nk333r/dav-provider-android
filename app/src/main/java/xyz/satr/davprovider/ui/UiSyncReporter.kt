@@ -37,6 +37,7 @@ internal class UiSyncReporter(context: Context) : SyncReporter {
         }
         store.record(
             account = report.account,
+            authority = report.authority,
             atMillis = report.finishedAt,
             status = accountStatus(report.status),
             summary = runSummary(report),

@@ -21,6 +21,18 @@ internal data class CollectionReport(
 internal enum class AccountStatus { OK, PARTIAL, FAILED, NEVER_SYNCED }
 
 /**
+ * One authority's verdict from its most recent run.
+ *
+ * [status] and [summary] are the sync engine's per-run rollup, which knows about a terminal class
+ * that stopped the run and about a failure that never reached a Collection. They are kept per
+ * authority because the two authorities run separately and each is entitled to its own answer.
+ */
+internal data class AuthorityReport(
+    val status: AccountStatus,
+    val summary: String? = null,
+)
+
+/**
  * The last run of one account: an Account-wide rollup plus one entry per Collection, because one
  * broken Collection must never hide the state of the others.
  *
@@ -38,7 +50,40 @@ internal data class AccountReport(
     val collections: List<CollectionReport>,
     val summary: String? = null,
     val deferred: Boolean = false,
-)
+    val authorities: Map<String, AuthorityReport> = emptyMap(),
+) {
+    /**
+     * The verdict to display.
+     *
+     * The worst authority, not the last one to run: contacts and calendars finish at different
+     * moments, and letting the later one speak meant a failed calendar was reported as "All
+     * Collections synced" whenever contacts happened to succeed afterwards. The card then
+     * contradicted the Collection line printed directly beneath it.
+     */
+    val composedStatus: AccountStatus
+        get() = authorities.values.maxByOrNull { it.status.severity }?.status ?: status
+
+    /** The reason to display: the failing authority's, which the last run may not be. */
+    val composedSummary: String?
+        get() = authorities.values
+            .filter { it.status.severity > AccountStatus.OK.severity }
+            .maxByOrNull { it.status.severity }
+            ?.summary
+            ?: summary
+}
+
+/**
+ * How bad a status is, so that two authorities can be compared rather than ordered by when they
+ * happened to run. NEVER_SYNCED sits below OK because an authority that has not reported says
+ * nothing about the account.
+ */
+internal val AccountStatus.severity: Int
+    get() = when (this) {
+        AccountStatus.NEVER_SYNCED -> 0
+        AccountStatus.OK -> 1
+        AccountStatus.PARTIAL -> 2
+        AccountStatus.FAILED -> 3
+    }
 
 /**
  * Per-Account sync status, kept in AccountManager userdata next to the account record.
@@ -78,13 +123,29 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
      */
     fun record(
         account: Account,
+        authority: String,
         atMillis: Long,
         status: AccountStatus,
         summary: String?,
         collections: List<CollectionReport>,
     ) {
-        val merged = mergeCollectionReports(read(account)?.collections.orEmpty(), collections)
-        manager.setUserData(account, KEY, encode(AccountReport(status, atMillis, merged, summary)))
+        val previous = read(account)
+        val merged = mergeCollectionReports(previous?.collections.orEmpty(), collections)
+        val authorities = previous?.authorities.orEmpty() +
+            (authority to AuthorityReport(status, summary))
+        manager.setUserData(
+            account,
+            KEY,
+            encode(
+                AccountReport(
+                    status = status,
+                    lastSyncAt = atMillis,
+                    collections = merged,
+                    summary = summary,
+                    authorities = authorities,
+                ),
+            ),
+        )
     }
 
     /**
@@ -135,6 +196,22 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
             // Written only when set, so a record from before this field existed decodes unchanged.
             if (report.deferred) put(KEY_DEFERRED, true)
             put(KEY_COLLECTIONS, collections)
+            if (report.authorities.isNotEmpty()) {
+                put(
+                    KEY_AUTHORITIES,
+                    JSONObject().apply {
+                        report.authorities.forEach { (authority, verdict) ->
+                            put(
+                                authority,
+                                JSONObject().apply {
+                                    put(KEY_STATUS, verdict.status.name)
+                                    verdict.summary?.let { put(KEY_SUMMARY, it) }
+                                },
+                            )
+                        }
+                    },
+                )
+            }
         }.toString()
     }
 
@@ -158,7 +235,28 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
             collections = entries,
             summary = root.optString(KEY_SUMMARY).takeIf { it.isNotEmpty() },
             deferred = root.optBoolean(KEY_DEFERRED, false),
+            authorities = decodeAuthorities(root.optJSONObject(KEY_AUTHORITIES)),
         )
+    }
+
+    /**
+     * A record written before the per-authority verdicts existed has none, and decoding one is not
+     * an error: the top-level fields it does have remain the fallback the card renders until each
+     * authority reports once.
+     */
+    private fun decodeAuthorities(raw: JSONObject?): Map<String, AuthorityReport> {
+        if (raw == null) return emptyMap()
+        val decoded = LinkedHashMap<String, AuthorityReport>(raw.length())
+        raw.keys().forEach { authority ->
+            val entry = raw.optJSONObject(authority) ?: return@forEach
+            val status = runCatching { AccountStatus.valueOf(entry.getString(KEY_STATUS)) }
+                .getOrNull() ?: return@forEach
+            decoded[authority] = AuthorityReport(
+                status = status,
+                summary = entry.optString(KEY_SUMMARY).takeIf { it.isNotEmpty() },
+            )
+        }
+        return decoded
     }
 
     private companion object {
@@ -171,6 +269,7 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
         const val KEY_OUTCOME = "outcome"
         const val KEY_ERROR_CLASS = "errorClass"
         const val KEY_SUMMARY = "summary"
+        const val KEY_AUTHORITIES = "authorities"
     }
 }
 

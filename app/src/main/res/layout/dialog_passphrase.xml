@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:id="@+id/passphrase_note"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textAppearance="?attr/textAppearanceBodySmall" />
+
+    <EditText
+        android:id="@+id/passphrase_input"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:hint="@string/export_passphrase"
+        android:importantForAutofill="no"
+        android:inputType="textPassword"
+        android:maxLines="1" />
+
+    <EditText
+        android:id="@+id/passphrase_repeat"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="@string/export_passphrase_repeat"
+        android:importantForAutofill="no"
+        android:inputType="textPassword"
+        android:maxLines="1" />
+
+</LinearLayout>

@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Account setup -->
+
+    <string name="setup_intro">One account is one server. Only the base URL is required: a server that wants no credentials is legitimate, so nothing here is validated by rule.</string>
+    <string name="field_base_url">Base URL (required)</string>
+    <string name="field_label">Label</string>
+    <string name="label_note">Defaults to the host. The label is the account identity, so saving a second account with the same label updates this one.</string>
+    <string name="label_locked">The label identifies the account. To configure the same server twice, remove this account first.</string>
+    <string name="section_headers">Headers</string>
+    <string name="headers_note">Sent on every request for this account. Values are stored as secrets: they can be replaced, never shown again. Once the account exists, a row left empty keeps the value already stored, and deleting the row removes the header. A misspelled header name and a rejected token produce the same redirect, so both are spelled out here.</string>
+    <string name="add_header">Add header</string>
+    <string name="header_name">Name</string>
+    <string name="header_value">Value (secret)</string>
+    <string name="remove_header">Remove header</string>
+    <string name="cloudflare_shortcut">Cloudflare Access</string>
+    <string name="section_certificate">Client certificate</string>
+    <string name="no_certificate">No certificate selected</string>
+    <string name="certificate_selected">Certificate: %1$s</string>
+    <string name="choose_certificate">Choose certificate</string>
+    <string name="clear_certificate">Clear certificate</string>
+    <string name="certificate_note">Only the alias is stored; the key stays in the Android KeyChain. A restored device has no key for the alias, and the app reports that rather than an auth failure.</string>
+    <string name="section_credentials">Username and password</string>
+    <string name="field_username">Username (optional)</string>
+    <string name="field_password">Password (secret, optional)</string>
+    <string name="credentials_note">A username without a password is legal. Once the account exists, an empty password field keeps the stored password; use Clear password to remove it.</string>
+    <string name="clear_password">Clear password</string>
+    <string name="password_will_be_removed">The stored password will be removed when you save.</string>
+    <string name="save_account">Save account</string>
+    <string name="saving">Saving\u2026</string>
+    <string name="error_url_required">A base URL is required.</string>
+    <string name="error_url_scheme">The base URL must start with http:// or https://.</string>
+    <string name="save_failed">The account could not be saved: %1$s</string>
+    <string name="validation_saved">Account saved. The check below is a report, not a condition of saving.</string>
+    <string name="validation_progress">Asking the server with PROPFIND Depth: 0\u2026</string>
+    <string name="details">Details</string>
+    <string name="details_hide">Hide details</string>
+    <string name="copy_details">Copy details</string>
+    <string name="copied">Copied to the clipboard</string>
+    <string name="close">Close</string>
+
+    <!-- Error details -->
+
+    <string name="details_status">HTTP status: %1$s</string>
+    <string name="details_body">First body line: %1$s</string>
+    <string name="details_certificate">Certificate offered: %1$s</string>
+    <string name="details_method">Request method: %1$s</string>
+    <string name="details_class">Class: %1$s</string>
+    <string name="details_condition">DAV condition: %1$s</string>
+    <string name="details_cause">Cause: %1$s</string>
+    <string name="value_yes">yes</string>
+    <string name="value_no">no</string>
+    <string name="value_none">none</string>
+    <string name="value_no_response">no response (transport failure)</string>
+
+    <!-- Settings -->
+
+    <string name="settings_empty">No accounts yet. Add one to sync a server into this device.</string>
+    <string name="add_account">Add account</string>
+    <string name="status_ok">OK</string>
+    <string name="status_partial">Partial</string>
+    <string name="status_failed">Failed</string>
+    <string name="status_never_synced">Not synced yet</string>
+    <string name="status_detail_ok">All Collections synced</string>
+    <string name="status_detail_partial">%1$d of %2$d Collections failed</string>
+    <string name="status_detail_failed">All %1$d Collections failed</string>
+    <string name="status_detail_never_synced">No sync has run for this account</string>
+    <string name="last_sync">Last sync: %1$s</string>
+    <string name="last_sync_never">Last sync: never</string>
+    <string name="waiting_for_wifi">Waiting for Wi-Fi: this account only syncs on unmetered networks.</string>
+    <string name="sync_anyway">Sync anyway</string>
+    <string name="sync_now">Sync now</string>
+    <string name="sync_requested">Sync requested.</string>
+    <string name="diagnose">Diagnose</string>
+    <string name="diagnose_title">Diagnose: %1$s</string>
+    <string name="diagnose_progress">Sending request %1$d of %2$d\u2026</string>
+    <string name="diagnose_intro">Four requests, sent only because you asked: with credentials, without headers, without certificate, fully unauthenticated. Automatic runs like this would look like an attack and can get a service token rate-limited.</string>
+    <string name="diagnose_variant_with_credentials">With credentials</string>
+    <string name="diagnose_variant_without_headers">Without headers</string>
+    <string name="diagnose_variant_without_certificate">Without certificate</string>
+    <string name="diagnose_variant_unauthenticated">Fully unauthenticated</string>
+    <string name="diagnose_unreadable">Credentials cannot be read for this account, so their contribution cannot be varied. Re-enter them in the account.</string>
+    <string name="collections">Collections</string>
+    <string name="no_collections">No Collections stored. Discovery is not connected in this build, so add a Collection URL directly.</string>
+    <string name="refresh_collections">Check collections</string>
+    <string name="add_collection">Add collection URL</string>
+    <string name="collections_checked">Checked the server: %1$d Collections stored, %2$d added.</string>
+    <string name="collection_url_hint">Collection URL</string>
+    <string name="collection_added">Added %1$s</string>
+    <string name="not_a_collection">That URL is not an address book or a calendar: %1$s</string>
+    <string name="collection_unavailable">unavailable, not deleted</string>
+    <string name="collection_not_synced">not synced yet</string>
+    <string name="collection_synced">synced</string>
+    <string name="collection_select">Sync this Collection</string>
+    <string name="type_addressbook">address book</string>
+    <string name="type_calendar">calendar</string>
+    <string name="remove_account">Remove account</string>
+    <string name="remove_account_title">Remove %1$s?</string>
+    <string name="remove_account_message">The account, its stored credentials and its Collection selection are removed. Contacts and events already synced stay in the phone providers.</string>
+    <string name="remove">Remove</string>
+    <string name="cancel">Cancel</string>
+    <string name="ok">OK</string>
+    <string name="share">Share</string>
+    <string name="log">Log</string>
+    <string name="clear">Clear</string>
+    <string name="log_title">Recent attempts</string>
+    <string name="log_empty">Nothing recorded yet.</string>
+    <string name="log_note">Header values and passwords never enter this log; header names do, because a misspelled name is a real failure mode and is not a secret.</string>
+    <string name="log_collection_ok">ok (%1$d written, %2$d deleted)</string>
+    <string name="log_run_aborted">the run stopped early: a credential failure ended it before the remaining Collections</string>
+    <string name="log_no_collections">ok (nothing to do: no Collections are selected)</string>
+    <string name="account_removed">Removed %1$s</string>
+    <string name="collection_meta">%1$s \u00b7 %2$s</string>
+    <string name="status_line">%1$s: %2$s</string>
+    <string name="clip_label">DAV server check</string>
+    <string name="discovery_not_connected">No request was sent: the progressive discovery walk (.well-known, current-user-principal, home set, enumerate) is owned by the sync slice and is not connected in this build. Existing Collections keep their availability; paste a Collection URL to configure this account.</string>
+    <string name="diagnose_row_head">HTTP %1$s  \u00b7  certificate offered: %2$s  \u00b7  %3$s</string>
+
+    <!-- Export and import -->
+
+    <string name="export_accounts">Export accounts</string>
+    <string name="import_accounts">Import accounts</string>
+    <string name="export_start">Export</string>
+    <string name="import_start">Import</string>
+    <string name="export_note">The file holds every account, including header values, passwords and certificate aliases, encrypted with this passphrase. A restored device has no KeyChain key, so this file is the portable copy: keep the passphrase, it cannot be recovered.</string>
+    <string name="import_note">Type the passphrase this file was exported with.</string>
+    <string name="export_passphrase">Passphrase</string>
+    <string name="export_passphrase_repeat">Passphrase again</string>
+    <string name="passphrase_short">Use at least 8 characters.</string>
+    <string name="passphrase_required">A passphrase is required.</string>
+    <string name="passphrase_mismatch">The two passphrases differ.</string>
+    <string name="export_working">Encrypting\u2026</string>
+    <string name="export_done">Exported %1$d accounts.</string>
+    <string name="export_skipped">Skipped %1$d accounts whose credentials cannot be read: %2$s</string>
+    <string name="export_failed">The export failed: %1$s</string>
+    <string name="import_working">Decrypting\u2026</string>
+    <string name="import_done">Imported %1$d accounts.</string>
+    <string name="import_skipped">Left untouched, %1$d accounts already on this device: %2$s</string>
+    <string name="import_failed_accounts">%1$d accounts could not be imported: %2$s</string>
+    <string name="import_version">This file declares format version %1$d, which this build does not know. Nothing was imported.</string>
+    <string name="import_wrong_passphrase">The passphrase does not open this file, or the file changed after it was written.</string>
+    <string name="import_failed">The file could not be read: %1$s</string>
+    <string name="export_filename">dav-accounts.json</string>
+
+    <!-- Notifications -->
+
+    <string name="notification_channel">Sync failures</string>
+    <string name="notification_channel_description">Failures that need you: rejected credentials, a certificate that is gone, credentials that cannot be read.</string>
+    <string name="notification_title">Sync failed for %1$s</string>
+    <string name="notifications_title">Sync failure notifications</string>
+    <string name="notifications_message">A sync that fails for a reason you can fix — a rejected token, a certificate that is gone — can tell you once, instead of waiting to be noticed. Allow notifications?</string>
+    <string name="notifications_allow">Allow</string>
+    <string name="notifications_later">Not now</string>
+
+</resources>

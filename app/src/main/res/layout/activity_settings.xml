@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <ScrollView
+        android:id="@+id/settings_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:id="@+id/settings_empty"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_empty"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:visibility="gone" />
+
+            <LinearLayout
+                android:id="@+id/accounts_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+
+        </LinearLayout>
+    </ScrollView>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="12dp">
+
+        <Button
+            android:id="@+id/add_account"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/add_account" />
+
+        <Button
+            android:id="@+id/view_log"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="@string/log" />
+
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="12dp">
+
+        <Button
+            android:id="@+id/export_accounts"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/export_accounts" />
+
+        <Button
+            android:id="@+id/import_accounts"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="@string/import_accounts" />
+
+    </LinearLayout>
+
+</LinearLayout>

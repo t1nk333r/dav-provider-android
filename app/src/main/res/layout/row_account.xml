@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="12dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="12dp">
+
+        <TextView
+            android:id="@+id/account_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textAppearance="?attr/textAppearanceTitleMedium" />
+
+        <TextView
+            android:id="@+id/account_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+        <TextView
+            android:id="@+id/account_last_sync"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
+
+        <LinearLayout
+            android:id="@+id/account_wifi"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/waiting_for_wifi"
+                android:textAppearance="?attr/textAppearanceBodySmall" />
+
+            <Button
+                android:id="@+id/account_sync_anyway"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/sync_anyway" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/collections"
+            android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+        <TextView
+            android:id="@+id/account_no_collections"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/no_collections"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/account_collections"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/account_sync_now"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/sync_now" />
+
+            <Button
+                android:id="@+id/account_diagnose"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/diagnose"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/account_refresh_collections"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/refresh_collections" />
+
+            <Button
+                android:id="@+id/account_add_collection"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/add_collection" />
+
+            <Button
+                android:id="@+id/account_remove"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/remove_account" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+</com.google.android.material.card.MaterialCardView>

@@ -1,0 +1,233 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/setup_intro"
+            android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+        <EditText
+            android:id="@+id/url_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:hint="@string/field_base_url"
+            android:importantForAutofill="no"
+            android:inputType="textUri"
+            android:maxLines="1" />
+
+        <EditText
+            android:id="@+id/label_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/field_label"
+            android:importantForAutofill="no"
+            android:inputType="text"
+            android:maxLines="1" />
+
+        <TextView
+            android:id="@+id/label_note"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/label_note"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/section_headers"
+            android:textAppearance="?attr/textAppearanceTitleMedium" />
+
+        <LinearLayout
+            android:id="@+id/header_rows"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/add_header"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/add_header" />
+
+            <Button
+                android:id="@+id/cloudflare_shortcut"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/cloudflare_shortcut" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/headers_note"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/section_certificate"
+            android:textAppearance="?attr/textAppearanceTitleMedium" />
+
+        <TextView
+            android:id="@+id/cert_alias"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/no_certificate"
+            android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/choose_certificate"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/choose_certificate" />
+
+            <Button
+                android:id="@+id/clear_certificate"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/clear_certificate" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/certificate_note"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/section_credentials"
+            android:textAppearance="?attr/textAppearanceTitleMedium" />
+
+        <EditText
+            android:id="@+id/username_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/field_username"
+            android:importantForAutofill="no"
+            android:inputType="text"
+            android:maxLines="1" />
+
+        <EditText
+            android:id="@+id/password_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/field_password"
+            android:importantForAutofill="no"
+            android:inputType="textPassword"
+            android:maxLines="1"
+            android:saveEnabled="false" />
+
+        <Button
+            android:id="@+id/clear_password"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/clear_password" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/credentials_note"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
+
+        <Button
+            android:id="@+id/save_account"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/save_account" />
+
+        <TextView
+            android:id="@+id/save_progress"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/probe_card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/probe_saved"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/validation_saved"
+                android:textAppearance="?attr/textAppearanceBodySmall" />
+
+            <TextView
+                android:id="@+id/probe_summary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:textAppearance="?attr/textAppearanceTitleMedium" />
+
+            <TextView
+                android:id="@+id/probe_details"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:textIsSelectable="true"
+                android:textSize="12sp"
+                android:visibility="gone" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/probe_details_toggle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/details" />
+
+                <Button
+                    android:id="@+id/probe_copy"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/copy_details" />
+
+                <Button
+                    android:id="@+id/probe_close"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/close" />
+            </LinearLayout>
+        </LinearLayout>
+
+    </LinearLayout>
+</ScrollView>

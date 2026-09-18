@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content">
+
+    <EditText
+        android:id="@+id/text_input"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:importantForAutofill="no"
+        android:inputType="textUri"
+        android:maxLines="1" />
+
+</FrameLayout>

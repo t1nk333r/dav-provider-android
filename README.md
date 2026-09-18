@@ -30,6 +30,16 @@ difference cannot be diagnosed from the app alone.
 Two-way sync, tasks and scheduling beyond a fixed interval are out of scope, with
 reasons recorded on the issues.
 
+<p align="center">
+  <img src="docs/screenshots/account.png" width="320" alt="An account with its collections, one of them reporting a server error">
+  <img src="docs/screenshots/logs.png" width="320" alt="The log, showing a failed collection in red, a partial run in amber and successful syncs in green">
+</p>
+
+The log names what failed rather than that something did: an HTTP status, the first
+line of the response body, and whether a certificate was offered — the last of which
+is the fact that separates "no certificate was sent" from "the certificate was not
+accepted". The dark and light variants are in [`docs/screenshots/`](docs/screenshots).
+
 ## Why
 
 Mainstream Android DAV clients cannot send arbitrary request headers. That makes a

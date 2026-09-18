@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.DavProvider" parent="Theme.Material3.DayNight.NoActionBar" />
+    <!--
+      Light mode. The status and navigation bar icons are drawn dark, because the system default is
+      light icons and the app's own background is light in this mode — which made them invisible
+      rather than merely ugly. The night variant turns them back off.
+    -->
+    <style name="Theme.DavProvider" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
 </resources>

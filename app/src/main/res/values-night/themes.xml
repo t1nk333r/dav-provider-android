@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Dark mode: the surface is dark, so the system bars need light icons. The values/ variant sets
+      the opposite, and between them the bars are legible in both modes without any screen opting
+      out of the theme.
+    -->
+    <style name="Theme.DavProvider" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- supportsUploading="false" is the read-only declaration: stock editors refuse
+     edits up front and the framework never requests upload-only syncs. -->
+<sync-adapter xmlns:android="http://schemas.android.com/apk/res/android"
+    android:contentAuthority="com.android.contacts"
+    android:accountType="xyz.satr.davprovider"
+    android:userVisible="true"
+    android:supportsUploading="false"
+    android:allowParallelSyncs="false"
+    android:isAlwaysSyncable="true"
+    android:settingsActivity="xyz.satr.davprovider.ui.SettingsActivity" />

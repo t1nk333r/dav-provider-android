@@ -19,3 +19,7 @@ captures/
 
 # OS
 .DS_Store
+app/build/
+build/
+.gradle/
+local.properties

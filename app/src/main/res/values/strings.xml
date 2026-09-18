@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DAV Provider</string>
+    <string name="account_type_label">DAV Provider</string>
+    <string name="title_add_account">Add DAV account</string>
+</resources>

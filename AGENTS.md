@@ -9,11 +9,11 @@ specifics and acceptance criteria.
 
 ### Issue tracker
 
-Issues and specs live as local markdown files under `.scratch/<feature-slug>/` in this repo; there is no remote tracker. See `docs/agents/issue-tracker.md`.
+Issues and specs live as GitHub issues in `t1nk333r/dav-provider-android`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
-The five canonical triage roles, used verbatim as `Status:` values in issue files. See `docs/agents/triage-labels.md`.
+The five canonical triage roles, used verbatim as GitHub label names. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 

@@ -136,6 +136,9 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         findViewById<Button>(R.id.import_certificate).setOnClickListener { importCertificate() }
         findViewById<Button>(R.id.clear_certificate).setOnClickListener { clearCertificate() }
         findViewById<Button>(R.id.clear_password).setOnClickListener { clearPassword() }
+        // Material's box keeps its error until something clears it, and a complaint that the URL is
+        // missing has no business sitting under a field that now has one.
+        urlInput.doAfterTextChanged { urlInput.fieldError(null) }
         passwordInput.doAfterTextChanged { text -> if (!text.isNullOrEmpty()) passwordCleared = false }
         saveButton.setOnClickListener { save() }
         probeToggle.setOnClickListener { toggleDetails() }
@@ -217,7 +220,9 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         passwordCleared = state.getBoolean(KEY_PASSWORD_CLEARED)
         if (state.getBoolean(KEY_STORED)) {
             stored = true
-            labelInput.isEnabled = false
+            // The box is what greys out: a TextInputLayout left enabled keeps drawing an active
+            // outline around a field nobody can type into. Disabling it reaches the field inside.
+            findViewById<TextInputLayout>(R.id.label_input_box).isEnabled = false
             labelNote.setText(R.string.label_locked)
         }
         detailsText = state.getString(KEY_DETAILS).orEmpty()
@@ -314,7 +319,7 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             val passphrase = input.text.toString()
             if (passphrase.isEmpty()) {
-                input.error = getString(R.string.passphrase_required)
+                input.fieldError(getString(R.string.passphrase_required))
                 return@setOnClickListener
             }
             dialog.dismiss()
@@ -590,12 +595,12 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
      */
     private fun save() {
         if (urlInput.text.toString().isBlank()) {
-            urlInput.error = getString(R.string.error_url_required)
+            urlInput.fieldError(getString(R.string.error_url_required))
             return
         }
         val parsed = urlInput.text.toString().trim().toHttpUrlOrNull()
         if (parsed == null) {
-            urlInput.error = getString(R.string.error_url_scheme)
+            urlInput.fieldError(getString(R.string.error_url_scheme))
             return
         }
         urlInput.setText(parsed.toString())
@@ -742,7 +747,9 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
             stored = true
             // The label is the account identity; renaming would create a second account and a
             // second copy of the same data.
-            labelInput.isEnabled = false
+            // The box is what greys out: a TextInputLayout left enabled keeps drawing an active
+            // outline around a field nobody can type into. Disabling it reaches the field inside.
+            findViewById<TextInputLayout>(R.id.label_input_box).isEnabled = false
             labelNote.setText(R.string.label_locked)
             setResult(Activity.RESULT_OK)
             authenticatorResponse?.onResult(

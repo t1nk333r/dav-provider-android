@@ -5,7 +5,10 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.text.format.DateUtils
 import android.view.View
+import android.view.ViewParent
+import android.widget.EditText
 import android.widget.Toast
+import com.google.android.material.textfield.TextInputLayout
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -199,6 +202,27 @@ internal fun diagnoseRow(context: Context, outcome: ProbeOutcome): String = buil
     appendLine(outcome.error.summary)
     outcome.error.firstBodyLine?.let { appendLine(context.getString(R.string.details_body, clip(it, MAX_BODY_LINE))) }
 }.trimEnd()
+
+/**
+ * Shows a field's error where Material 3 shows it, and clears it the same way.
+ *
+ * `TextInputEditText.setError` is not that. It draws the old compound-drawable icon in the field's
+ * own corner and no message at all, so the one line that says what is wrong never appears — the
+ * error belongs to the box the field sits in. Every field in this app is inside one, which is why
+ * the box is found from the field rather than passed in.
+ *
+ * A null message clears it, because Material's box does not clear its own error when the user
+ * starts typing: without this, a complaint about an empty URL would sit under a field that now has
+ * one.
+ */
+internal fun EditText.fieldError(message: CharSequence?) {
+    // Found by walking up, not taken from the immediate parent: a TextInputLayout puts the field
+    // inside its own input frame, so the field's parent is that frame and the cast to the layout
+    // would quietly fail, leaving the error nowhere.
+    var ancestor: ViewParent? = parent
+    while (ancestor != null && ancestor !is TextInputLayout) ancestor = ancestor.parent
+    (ancestor as? TextInputLayout)?.error = message
+}
 
 internal fun applyCollectionColor(view: View, color: Int?) {
     view.setBackgroundColor(color ?: view.context.getColor(android.R.color.darker_gray))

@@ -1,34 +1,59 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  One header: its name, its value, and a way to drop it. The weights sit on the boxes rather than on
+  the fields, since a TextInputLayout is what occupies the row now.
+
+  The value is a field with a reveal toggle: these are pasted from a password manager and rarely
+  typed, so being able to look at one is how a bad paste is told from a rejected token.
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="horizontal">
 
-    <EditText
-        android:id="@+id/header_name"
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/header_name_box"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_weight="2"
-        android:hint="@string/header_name"
-        android:importantForAutofill="no"
-        android:inputType="textNoSuggestions"
-        android:maxLines="1" />
+        android:hint="@string/header_name">
 
-    <EditText
-        android:id="@+id/header_value"
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/header_name"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:importantForAutofill="no"
+            android:inputType="textNoSuggestions"
+            android:maxLines="1" />
+
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/header_value_box"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
         android:layout_weight="3"
         android:hint="@string/header_value"
-        android:importantForAutofill="no"
-        android:inputType="textPassword"
-        android:maxLines="1"
-        android:saveEnabled="false" />
+        app:endIconMode="password_toggle">
+
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/header_value"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:importantForAutofill="no"
+            android:inputType="textPassword"
+            android:maxLines="1"
+            android:saveEnabled="false" />
+
+    </com.google.android.material.textfield.TextInputLayout>
 
     <ImageButton
         android:id="@+id/header_remove"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_gravity="center_vertical"
         android:background="?attr/selectableItemBackgroundBorderless"
         android:contentDescription="@string/remove_header"
         android:src="@android:drawable/ic_menu_close_clear_cancel" />

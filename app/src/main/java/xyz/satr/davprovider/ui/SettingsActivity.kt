@@ -734,10 +734,10 @@ class SettingsActivity : AppCompatActivity() {
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             val passphrase = first.text.toString()
             when {
-                passphrase.isEmpty() -> first.error = getString(R.string.passphrase_required)
-                confirm && passphrase.length < MIN_PASSPHRASE -> first.error = getString(R.string.passphrase_short)
+                passphrase.isEmpty() -> first.fieldError(getString(R.string.passphrase_required))
+                confirm && passphrase.length < MIN_PASSPHRASE -> first.fieldError(getString(R.string.passphrase_short))
                 confirm && passphrase != second.text.toString() ->
-                    second.error = getString(R.string.passphrase_mismatch)
+                    second.fieldError(getString(R.string.passphrase_mismatch))
 
                 else -> {
                     dialog.dismiss()

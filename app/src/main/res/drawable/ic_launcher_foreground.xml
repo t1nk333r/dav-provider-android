@@ -1,14 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  A padlock whose shackle is a rotation arrow: security and sync in one mark, which is what this
-  app is — a sync provider whose distinguishing feature is how it gets through the gate.
+  The app's initial, drawn as one geometric shape: a stem and a single elliptical bowl, with the
+  counter cut out of the same path rather than painted in the background colour.
 
-  Drawn on the adaptive grid: a 108dp canvas whose outer 18dp on every side the launcher may crop,
-  so the whole mark sits inside the central 72dp and keeps its silhouette under any mask.
-
-  The keyhole is a hole in the body, not a shape painted on top of it. Painting it in the
-  background colour would look identical on this background and break the moment a launcher tints
-  the icon or draws the monochrome layer.
+  Drawn on the adaptive grid — a 108dp canvas whose outer 18dp on every side the launcher may crop —
+  so the letter sits well inside the central 72dp and keeps its silhouette under any mask. The bowl
+  is an ellipse rather than a circle so the letter can be tall enough to read at launcher size
+  without growing wider than the safe zone.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -16,19 +14,8 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- The shackle, swept from the left and ending in a downward arrowhead. -->
-    <path
-        android:pathData="M 39 34 A 15 15 0 0 1 67 31"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="11"
-        android:strokeLineCap="butt" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M 61 26 L 78 30 L 67 43 Z" />
-
-    <!-- The body, with the keyhole cut out of it. -->
     <path
         android:fillColor="#FFFFFF"
         android:fillType="evenOdd"
-        android:pathData="M40,44 h28 a10,10 0 0 1 10,10 v18 a10,10 0 0 1 -10,10 h-28 a10,10 0 0 1 -10,-10 v-18 a10,10 0 0 1 10,-10 z M48,59 a6,6 0 1 0 12,0 a6,6 0 1 0 -12,0 z M51,61 h6 l-1.5,9 h-3 z" />
+        android:pathData="M36,24 h19 a19,30 0 0 1 0,60 h-19 z M46,34 h9 a9,20 0 0 1 0,40 h-9 z" />
 </vector>

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   The pre-API-26 fallback: no adaptive mask exists there, so this carries its own background and
-  the same mark, drawn from the same paths as the adaptive foreground. Without it the launcher on
-  API 24 and 25 has nothing to show, and minSdk here is 24.
+  draws the same letter from the same path. Without it the launcher on API 24 and 25 has nothing to
+  show, and minSdk here is 24.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -15,15 +15,7 @@
         android:pathData="M0,0h108v108h-108z" />
 
     <path
-        android:pathData="M 39 34 A 15 15 0 0 1 67 31"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="11"
-        android:strokeLineCap="butt" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M 61 26 L 78 30 L 67 43 Z" />
-    <path
         android:fillColor="#FFFFFF"
         android:fillType="evenOdd"
-        android:pathData="M40,44 h28 a10,10 0 0 1 10,10 v18 a10,10 0 0 1 -10,10 h-28 a10,10 0 0 1 -10,-10 v-18 a10,10 0 0 1 10,-10 z M48,59 a6,6 0 1 0 12,0 a6,6 0 1 0 -12,0 z M51,61 h6 l-1.5,9 h-3 z" />
+        android:pathData="M36,24 h19 a19,30 0 0 1 0,60 h-19 z M46,34 h9 a9,20 0 0 1 0,40 h-9 z" />
 </vector>

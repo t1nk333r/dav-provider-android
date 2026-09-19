@@ -77,8 +77,55 @@ internal class SyncLog(private val file: File) {
     )
 
     /**
-     * One run, or one Collection's part of it. Called once per Collection and once per run, so a
-     * reader never has to reconstruct the run from its parts.
+     * One run, or one Collection's part of it, without writing it.
+     *
+     * A run is one of these per Collection plus one of its own, so a reader never has to
+     * reconstruct the run from its parts. The caller hands them all to [appendAll] together, because
+     * writing here is a rewrite of the file rather than an append to it.
+     */
+    fun entry(
+        account: String,
+        collectionId: String?,
+        summary: String,
+        errorClass: ErrorClass?,
+        httpStatus: Int?,
+        method: String?,
+        level: Level,
+        authority: String? = null,
+        displayName: String? = null,
+        certificateOffered: Boolean? = null,
+        written: Int? = null,
+        deleted: Int? = null,
+        unchanged: Boolean? = null,
+        firstBodyLine: String? = null,
+        davCondition: String? = null,
+        cause: String? = null,
+    ): Entry = Entry(
+        at = Instant.now(),
+        level = level,
+        kind = Kind.SYNC,
+        account = account,
+        summary = summary,
+        collectionId = collectionId,
+        displayName = displayName,
+        authority = authority,
+        errorClass = errorClass,
+        httpStatus = httpStatus,
+        method = method,
+        certificateOffered = certificateOffered,
+        written = written,
+        deleted = deleted,
+        unchanged = unchanged,
+        firstBodyLine = firstBodyLine,
+        davCondition = davCondition,
+        cause = cause,
+    )
+
+    /**
+     * Writes one entry, for a caller that has exactly one.
+     *
+     * A run wants [appendAll]: this is a rewrite of the whole file per call, which is what a run's
+     * worth of them was doing.
      */
     fun append(
         account: String,
@@ -98,32 +145,39 @@ internal class SyncLog(private val file: File) {
         davCondition: String? = null,
         cause: String? = null,
     ) {
-        write(
+        appendAll(
             listOf(
-                encode(
-                    Entry(
-                        at = Instant.now(),
-                        level = level,
-                        kind = Kind.SYNC,
-                        account = account,
-                        summary = summary,
-                        collectionId = collectionId,
-                        displayName = displayName,
-                        authority = authority,
-                        errorClass = errorClass,
-                        httpStatus = httpStatus,
-                        method = method,
-                        certificateOffered = certificateOffered,
-                        written = written,
-                        deleted = deleted,
-                        unchanged = unchanged,
-                        firstBodyLine = firstBodyLine,
-                        davCondition = davCondition,
-                        cause = cause,
-                    ),
+                entry(
+                    account = account,
+                    collectionId = collectionId,
+                    summary = summary,
+                    errorClass = errorClass,
+                    httpStatus = httpStatus,
+                    method = method,
+                    level = level,
+                    authority = authority,
+                    displayName = displayName,
+                    certificateOffered = certificateOffered,
+                    written = written,
+                    deleted = deleted,
+                    unchanged = unchanged,
+                    firstBodyLine = firstBodyLine,
+                    davCondition = davCondition,
+                    cause = cause,
                 ),
             ),
         )
+    }
+
+    /**
+     * Writes a run's entries in one pass.
+     *
+     * The file is read and rewritten per call — a ring buffer that trims has no append — so writing
+     * one entry per Collection meant C+1 rewrites of a two-hundred-line file, all on the sync
+     * thread. The reporter holds the whole run in hand, which is what makes one call enough.
+     */
+    fun appendAll(entries: List<Entry>) {
+        write(entries.map { encode(it) })
     }
 
     /**

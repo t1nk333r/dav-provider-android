@@ -135,10 +135,9 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
         collections: List<CollectionReport>,
         automatic: Boolean,
     ) {
-        write(
-            account,
+        update(account) { previous ->
             mergeRun(
-                previous = read(account),
+                previous = previous,
                 authority = authority,
                 atMillis = atMillis,
                 status = status,
@@ -146,8 +145,8 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
                 collections = collections,
                 automatic = automatic,
                 intervalSeconds = intervalSeconds(account),
-            ),
-        )
+            )
+        }
     }
 
     /**
@@ -159,14 +158,13 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
      * state that must not be silent.
      */
     override fun recordDeferred(account: Account) {
-        write(
-            account,
+        update(account) { previous ->
             mergeDeferral(
-                previous = read(account),
+                previous = previous,
                 atMillis = System.currentTimeMillis(),
                 intervalSeconds = intervalSeconds(account),
-            ),
-        )
+            )
+        }
     }
 
     /**
@@ -184,6 +182,23 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
         manager.setUserData(account, KEY, null)
     }
 
+    /**
+     * The one place the report is changed, so every change is read-merge-written under one lock.
+     *
+     * Contacts and calendar are different adapters and finish in this process concurrently, and the
+     * report is a single userdata key: without this, two finishes landing together could drop one
+     * authority's verdict from the merged record — which is the very thing the merge keeps an
+     * `authorities` map for, so losing it loses half of what the account screen can say.
+     *
+     * The merge runs inside the lock rather than before it: reading, merging and writing are one
+     * decision, and splitting them is how the second writer overwrites the first.
+     */
+    private fun update(account: Account, merge: (AccountReport?) -> AccountReport) {
+        synchronized(LOCK) {
+            write(account, merge(read(account)))
+        }
+    }
+
     private fun write(account: Account, report: AccountReport) {
         manager.setUserData(account, KEY, AccountReportJson.encode(report))
     }
@@ -193,6 +208,8 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
 
     private companion object {
         const val KEY = "dav_sync_status_v1"
+
+        val LOCK = Any()
     }
 }
 

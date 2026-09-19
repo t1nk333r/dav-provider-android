@@ -45,8 +45,10 @@ internal class UiSyncReporter(context: Context) : SyncReporter {
             // §8's evidence needs to know whether the framework asked for this run or the user did.
             automatic = report.automatic,
         )
-        report.collections.forEach { outcome ->
-            log.append(
+        // The whole run in one write. The log is read and rewritten per call, so a Collection apiece
+        // plus the run's own line was that many rewrites of a 200-line file, on the sync thread.
+        val entries = report.collections.map { outcome ->
+            log.entry(
                 account = report.account.name,
                 collectionId = outcome.collectionId,
                 summary = outcome.error?.summary
@@ -68,9 +70,8 @@ internal class UiSyncReporter(context: Context) : SyncReporter {
                 davCondition = outcome.error?.davCondition,
                 cause = logCause(outcome.error?.cause),
             )
-        }
-        // Exactly one run-level entry, so "did this run sync anything" is one line to read.
-        log.append(
+        } + log.entry(
+            // Exactly one run-level entry, so "did this run sync anything" is one line to read.
             account = report.account.name,
             collectionId = null,
             summary = logRunSummary(report),
@@ -86,6 +87,7 @@ internal class UiSyncReporter(context: Context) : SyncReporter {
             davCondition = report.error?.davCondition,
             cause = logCause(report.error?.cause),
         )
+        log.appendAll(entries)
     }
 
     /** §5 class 3 is information: it must not mark a Collection failed nor contribute to Partial. */

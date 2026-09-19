@@ -62,6 +62,18 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
     private lateinit var urlInput: EditText
     private lateinit var labelInput: EditText
     private lateinit var labelNote: TextView
+
+    /** The note's own colour, put back when the label stops colliding with an account. */
+    private var labelNoteColor: Int = 0
+
+    /**
+     * The labels already on the device. Read once, because the only thing that can add one while
+     * this screen is open is this screen, and it reads again when it does. Stale the other way —
+     * an account removed elsewhere leaves a warning behind — which is why it warns and does not
+     * decide: the save is what refuses.
+     */
+    private var knownLabels: Set<String> = emptySet()
+
     private lateinit var headerRows: LinearLayout
     private lateinit var certStatusView: TextView
     private lateinit var certDetailsView: TextView
@@ -115,6 +127,7 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         urlInput = findViewById(R.id.url_input)
         labelInput = findViewById(R.id.label_input)
         labelNote = findViewById(R.id.label_note)
+        labelNoteColor = labelNote.currentTextColor
         headerRows = findViewById(R.id.header_rows)
         certStatusView = findViewById(R.id.cert_status)
         certDetailsView = findViewById(R.id.cert_details)
@@ -154,6 +167,9 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         // Material's box keeps its error until something clears it, and a complaint that the URL is
         // missing has no business sitting under a field that now has one.
         urlInput.doAfterTextChanged { urlInput.fieldError(null) }
+        // The label can arrive without being typed: it is derived from the host when the URL field
+        // loses focus, and Save derives it too.
+        labelInput.doAfterTextChanged { updateLabelNote() }
         passwordInput.doAfterTextChanged { text -> if (!text.isNullOrEmpty()) passwordCleared = false }
         saveButton.setOnClickListener { save() }
         probeToggle.setOnClickListener { toggleDetails() }
@@ -174,6 +190,21 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
                 }
             },
         )
+        executor.execute {
+            val labels = try {
+                UiDependencies.accountStore(this).list().map { it.label }.toSet()
+            } catch (e: Exception) {
+                // A record that cannot be read is not this screen's to report — the save says so
+                // when it gets there — and an empty set costs only the warning.
+                emptySet()
+            }
+            main.post {
+                if (isActive()) {
+                    knownLabels = labels
+                    updateLabelNote()
+                }
+            }
+        }
         restoreForm(savedInstanceState)
         // Never hide something already filled in: a rotation restores the header rows and the chosen
         // certificate, and folding them away would look like losing them.
@@ -257,7 +288,7 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
             // The box is what greys out: a TextInputLayout left enabled keeps drawing an active
             // outline around a field nobody can type into. Disabling it reaches the field inside.
             findViewById<TextInputLayout>(R.id.label_input_box).isEnabled = false
-            labelNote.setText(R.string.label_locked)
+            updateLabelNote()
         }
         detailsText = state.getString(KEY_DETAILS).orEmpty()
         probeDetails.text = detailsText
@@ -609,6 +640,31 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
 
     // ------------------------------------------------------------ label
 
+    /**
+     * The note under the label. Before Save it is the only place a collision can be seen, and the
+     * label is derived from the host, so a server that is already configured gets here without
+     * anyone typing its name.
+     *
+     * A warning, not the guard: [AccountStore.create] is what refuses, and it refuses whether or
+     * not this has been read.
+     */
+    private fun updateLabelNote() {
+        if (stored) {
+            labelNote.setText(R.string.label_locked)
+            labelNote.setTextColor(labelNoteColor)
+            return
+        }
+        if (labelInput.text.toString().trim() in knownLabels) {
+            labelNote.setText(R.string.label_taken)
+            labelNote.setTextColor(
+                MaterialColors.getColor(labelNote, com.google.android.material.R.attr.colorError),
+            )
+        } else {
+            labelNote.setText(R.string.label_note)
+            labelNote.setTextColor(labelNoteColor)
+        }
+    }
+
     private fun defaultLabelFromUrl() {
         val host = urlInput.text.toString().trim().toHttpUrlOrNull()?.host ?: return
         val current = labelInput.text.toString().trim()
@@ -791,7 +847,7 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
             // The box is what greys out: a TextInputLayout left enabled keeps drawing an active
             // outline around a field nobody can type into. Disabling it reaches the field inside.
             findViewById<TextInputLayout>(R.id.label_input_box).isEnabled = false
-            labelNote.setText(R.string.label_locked)
+            updateLabelNote()
             setResult(Activity.RESULT_OK)
             authenticatorResponse?.onResult(
                 Bundle().apply {

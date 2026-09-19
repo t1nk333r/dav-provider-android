@@ -7,6 +7,7 @@
     <string name="field_label">Label</string>
     <string name="label_note">Defaults to the host. Identifies the account.</string>
     <string name="label_locked">The label identifies the account. To configure the same server twice, remove this account first.</string>
+    <string name="label_taken">An account with this label already exists.</string>
     <string name="section_server">Server</string>
     <!-- The three sections below are folded behind this one. URL and label are all most accounts
          need; the rest is a long page to scroll past on the way to Save. -->

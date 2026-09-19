@@ -135,7 +135,7 @@
     <string name="type_calendar">calendar</string>
     <string name="remove_account">Remove account</string>
     <string name="remove_account_title">Remove %1$s?</string>
-    <string name="remove_account_message">The account, its stored credentials and its Collection selection are removed. Contacts and events already synced stay in the phone providers.</string>
+    <string name="remove_account_message">The account, its stored credentials, its Collection selection and every contact and event it synced are removed from this phone. Nothing of it stays behind.</string>
     <string name="remove">Remove</string>
     <string name="cancel">Cancel</string>
     <string name="ok">OK</string>

@@ -6,6 +6,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import xyz.satr.davprovider.ui.ReadResult
@@ -88,5 +89,20 @@ class HttpEvidenceTest {
             listing,
             HttpEvidence.ofWholeBody(responseWith(listing), certificateOffered = false).body,
         )
+    }
+
+    /**
+     * The other half of the same rule: having learned not to truncate, the read must still stop
+     * somewhere. A body past the ceiling is refused, which is a different outcome from a shorter
+     * one — the response is reported, and what it said is not guessed at.
+     */
+    @Test
+    fun `a body past the ceiling is refused rather than cut short`() {
+        val enormous = "<multistatus xmlns=\"DAV:\">" + " ".repeat(9 * 1024 * 1024) + "</multistatus>"
+
+        val evidence = HttpEvidence.ofWholeBody(responseWith(enormous), certificateOffered = false)
+
+        assertNull("a body this size is not something to parse", evidence.body)
+        assertEquals("the response itself is still reported", 207, evidence.httpStatus)
     }
 }

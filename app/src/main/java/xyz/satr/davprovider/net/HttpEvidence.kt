@@ -20,6 +20,15 @@ object HttpEvidence {
     private const val MAX_LINE_CHARS = 200
 
     /**
+     * The most a body parsed out of evidence may hold.
+     *
+     * Generous on purpose. A home set holding thousands of Collections is a real answer, so this is
+     * not a second, smaller version of the peek bound above — it is a ceiling against a server that
+     * answers with something else entirely, and the reason [bufferedBody] stops reading at it.
+     */
+    private const val MAX_WHOLE_BODY_BYTES = 8L * 1024 * 1024
+
+    /**
      * Reads the response without consuming it: the body is still there for dav4jvm to parse, which
      * is what makes this safe to call on every response of a sync.
      */
@@ -87,14 +96,30 @@ object HttpEvidence {
      * Everything the server sent, for the caller that parses it.
      *
      * Consumes the body, so it belongs only to a caller that owns the response and has nothing else
-     * to hand it to — which is both probes. Bounded by what the server sends, exactly as dav4jvm's
-     * own parse of a sync body is: a listing has no length this code could pick that would not be
-     * the same bug at a further distance.
+     * to hand it to — which is both probes.
+     *
+     * Refused rather than truncated past [MAX_WHOLE_BODY_BYTES]. A truncated multistatus is not a
+     * shorter answer, it is a malformed one — that is what the bound above [BODY_PEEK_BYTES] taught
+     * this file the first time — so a limit that kept the first N bytes would bring back the bug it
+     * was meant to catch. Refusing is a different outcome: the caller reports a response it could
+     * not read, which is true, instead of enumerating nothing, which is not.
+     *
+     * The read is bounded in what it *holds*, not only in what it keeps: [bufferedBody] asks for one
+     * byte past the limit and stops there, so a server cannot make this allocate by sending more.
      */
     private fun wholeBody(response: Response): String? = try {
-        val text = response.body?.string()?.trim()
+        val text = bufferedBody(response)?.trim()
         if (text.isNullOrEmpty()) null else text
     } catch (e: Exception) {
         null
+    }
+
+    /** The body, or null when there is none or it exceeds [MAX_WHOLE_BODY_BYTES]. */
+    private fun bufferedBody(response: Response): String? {
+        val source = response.body?.source() ?: return null
+        // Blocking, and deliberately so: this is asked for a caller that is about to parse the body.
+        source.request(MAX_WHOLE_BODY_BYTES + 1)
+        if (source.buffer.size > MAX_WHOLE_BODY_BYTES) return null
+        return source.readUtf8()
     }
 }

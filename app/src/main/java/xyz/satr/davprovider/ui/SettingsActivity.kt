@@ -29,6 +29,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.util.concurrent.Executors
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import xyz.satr.davprovider.R
@@ -390,7 +391,7 @@ class SettingsActivity : AppCompatActivity() {
         val offered = SyncPreferences.OFFERED_INTERVAL_SECONDS
         val labels = offered.map { intervalLabel(this, it) }.toTypedArray()
         val checked = offered.indexOf(SyncPreferences(this).intervalSeconds(screen.account))
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle(R.string.sync_interval_title)
             .setSingleChoiceItems(labels, checked) { dialog, which ->
                 dialog.dismiss()
@@ -532,8 +533,7 @@ class SettingsActivity : AppCompatActivity() {
     private fun addCollection(screen: AccountScreen) {
         val view = layoutInflater.inflate(R.layout.dialog_text_input, null)
         val input = view.findViewById<EditText>(R.id.text_input)
-        input.hint = getString(R.string.collection_url_hint)
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle(R.string.add_collection)
             .setView(view)
             .setPositiveButton(R.string.ok) { _, _ -> probeCollection(screen, input.text.toString().trim()) }
@@ -605,7 +605,7 @@ class SettingsActivity : AppCompatActivity() {
         val view = layoutInflater.inflate(R.layout.dialog_diagnose, null)
         val progress = view.findViewById<TextView>(R.id.diagnose_progress)
         val rows = view.findViewById<LinearLayout>(R.id.diagnose_rows)
-        val dialog = AlertDialog.Builder(this)
+        val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(getString(R.string.diagnose_title, screen.davAccount.label))
             .setView(view)
             .setPositiveButton(R.string.close, null)
@@ -656,7 +656,7 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun confirmRemove(screen: AccountScreen) {
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle(getString(R.string.remove_account_title, screen.davAccount.label))
             .setMessage(R.string.remove_account_message)
             .setPositiveButton(R.string.remove) { _, _ -> remove(screen) }
@@ -721,8 +721,10 @@ class SettingsActivity : AppCompatActivity() {
         view.findViewById<TextView>(R.id.passphrase_note).setText(noteRes)
         val first = view.findViewById<EditText>(R.id.passphrase_input)
         val second = view.findViewById<EditText>(R.id.passphrase_repeat)
-        if (!confirm) second.visibility = View.GONE
-        val dialog = AlertDialog.Builder(this)
+        // Import asks once, so the whole box goes rather than the field alone — hiding only the
+        // field would leave an empty outlined row under the first one.
+        if (!confirm) view.findViewById<View>(R.id.passphrase_repeat_box).visibility = View.GONE
+        val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(titleRes)
             .setView(view)
             .setPositiveButton(if (confirm) R.string.export_start else R.string.import_start, null)
@@ -873,7 +875,7 @@ class SettingsActivity : AppCompatActivity() {
         val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
         if (granted) return
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle(R.string.notifications_title)
             .setMessage(R.string.notifications_message)
             .setPositiveButton(R.string.notifications_allow) { _, _ ->
@@ -907,7 +909,7 @@ class SettingsActivity : AppCompatActivity() {
     private fun requestProviderPermissionsIfNeeded() {
         val missing = missingProviderPermissions()
         if (missing.isEmpty()) return
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle(R.string.provider_permissions_title)
             .setMessage(R.string.provider_permissions_message)
             .setPositiveButton(R.string.provider_permissions_allow) { _, _ ->
@@ -942,7 +944,7 @@ class SettingsActivity : AppCompatActivity() {
     private fun showTextDialog(title: String, body: String) {
         val view = layoutInflater.inflate(R.layout.dialog_text, null)
         view.findViewById<TextView>(R.id.text_body).text = body
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle(title)
             .setView(view)
             .setPositiveButton(R.string.close, null)

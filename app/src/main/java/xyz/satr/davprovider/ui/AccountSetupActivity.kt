@@ -24,6 +24,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.IntentCompat
 import androidx.core.widget.doAfterTextChanged
 import com.google.android.material.color.MaterialColors
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.textfield.TextInputLayout
 import java.util.concurrent.Executors
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import xyz.satr.davprovider.R
@@ -293,10 +295,14 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         val view = layoutInflater.inflate(R.layout.dialog_passphrase, null)
         view.findViewById<TextView>(R.id.passphrase_note).setText(R.string.certificate_passphrase_note)
         val input = view.findViewById<EditText>(R.id.passphrase_input)
-        input.hint = getString(R.string.certificate_passphrase)
-        // One field: an import opens an existing file, so there is nothing to confirm against.
-        view.findViewById<View>(R.id.passphrase_repeat).visibility = View.GONE
-        val dialog = AlertDialog.Builder(this)
+        // The label belongs to the field's box now, not the EditText: a hint set on the inner view
+        // is what a TextInputLayout ignores.
+        view.findViewById<TextInputLayout>(R.id.passphrase_input_box)
+            .hint = getString(R.string.certificate_passphrase)
+        // One field: an import opens an existing file, so there is nothing to confirm against. The
+        // box goes, not just the field, or an empty outlined row is left behind.
+        view.findViewById<View>(R.id.passphrase_repeat_box).visibility = View.GONE
+        val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(if (retry) R.string.certificate_wrong_passphrase_title else R.string.import_certificate)
             .setView(view)
             .setPositiveButton(R.string.import_start, null)
@@ -462,7 +468,7 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
      */
     private fun offerRetype() {
         val archive = pendingImport?.archive ?: return
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle(R.string.certificate_wrong_passphrase_title)
             .setMessage(R.string.certificate_wrong_passphrase_message)
             .setPositiveButton(R.string.certificate_retype) { _, _ ->

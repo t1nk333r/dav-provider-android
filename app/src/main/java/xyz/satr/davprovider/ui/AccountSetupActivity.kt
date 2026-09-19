@@ -32,6 +32,7 @@ import java.util.concurrent.Executors
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import xyz.satr.davprovider.R
 import xyz.satr.davprovider.core.ACCOUNT_TYPE
+import xyz.satr.davprovider.core.AccountExistsException
 import xyz.satr.davprovider.core.AccountStore
 import xyz.satr.davprovider.core.CertificateImportResult
 import xyz.satr.davprovider.core.ClientCertificateInfo
@@ -677,7 +678,14 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
                 },
             )
             try {
-                store.save(davAccount)
+                // The first save is the one that can collide: a label already on the device belongs
+                // to an account this form has never seen, and writing over it would take away an
+                // address, a password and a Collection selection that are nowhere on this screen.
+                // Later saves are of an account this session registered, and update it.
+                if (stored) store.save(davAccount) else store.create(davAccount)
+            } catch (e: AccountExistsException) {
+                main.post { if (isActive()) showAccountExists(e.label) }
+                return@execute
             } catch (e: Exception) {
                 val message = getString(R.string.save_failed, e.javaClass.simpleName)
                 main.post { if (isActive()) reportFailure(message, message) }
@@ -808,6 +816,24 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         probeDetails.text = details
         probeDetails.visibility = View.VISIBLE
         probeToggle.setText(R.string.details_hide)
+    }
+
+    /**
+     * A refusal, not a question. Nothing this screen can show would tell the user what saving over
+     * the account takes away — the password is never displayed and the Collections are on another
+     * screen — so the account is named, and what to do about it is said plainly. Nothing is
+     * deleted from here: removing an account is a decision about its data, and that lives where the
+     * data is.
+     */
+    private fun showAccountExists(label: String) {
+        setBusy(false)
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.account_exists_title)
+            .setMessage(getString(R.string.account_exists_message, label))
+            .setPositiveButton(R.string.account_exists_change_label) { _, _ ->
+                labelInput.requestFocus()
+            }
+            .show()
     }
 
     private fun showOutcome(outcome: ProbeOutcome) {

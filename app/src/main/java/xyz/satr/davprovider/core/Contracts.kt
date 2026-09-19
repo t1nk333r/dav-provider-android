@@ -187,11 +187,32 @@ interface CredentialStore {
 class CredentialsUnreadableException(cause: Throwable?) :
     Exception("Credentials can't be read — this happens after restoring a device.", cause)
 
+/**
+ * Thrown by [AccountStore.create] when an account with this label is already on the device.
+ *
+ * The label is the Android account name, so creating one would not add a second account: it would
+ * write the new record over the account that is there, replacing an address, a stored password, a
+ * certificate and a Collection selection that the caller never saw and could not show. A caller
+ * that means to update an account it knows exists wants [AccountStore.save].
+ */
+class AccountExistsException(val label: String) :
+    Exception("An account named \"$label\" already exists on this device.")
+
 /** Persistence of the Account record itself, in AccountManager. */
 interface AccountStore {
     fun list(): List<DavAccount>
     fun load(account: Account): DavAccount?
+
+    /**
+     * Registers a new Account, refusing when one with this label is already there.
+     *
+     * @throws AccountExistsException rather than writing over the account that is there.
+     */
+    fun create(davAccount: DavAccount)
+
+    /** Rewrites an Account that is expected to exist. This is the update path. */
     fun save(davAccount: DavAccount)
+
     fun delete(account: Account)
 }
 

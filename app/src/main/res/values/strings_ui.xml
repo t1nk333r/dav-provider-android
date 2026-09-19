@@ -227,4 +227,9 @@
     <string name="provider_permissions_allow">Grant access</string>
     <string name="provider_permissions_later">Not now</string>
 
+    <!-- The refusal to save over an account that is already on the device -->
+    <string name="account_exists_title">This account already exists</string>
+    <string name="account_exists_message">An account named %1$s is already on this device. Saving would replace its address, its password and its saved Collections with what is on this screen. Change the label to add a second account for this server, or remove the one that is there first.</string>
+    <string name="account_exists_change_label">Change the label</string>
+
 </resources>

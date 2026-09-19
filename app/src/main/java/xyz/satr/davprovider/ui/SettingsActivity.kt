@@ -833,7 +833,9 @@ class SettingsActivity : AppCompatActivity() {
                     importedCertificate == null
                 try {
                     val account = if (stripped) entry.account.copy(certificate = null) else entry.account
-                    store.save(account)
+                    // create, not save: the filter above is what makes an import additive, and this
+                    // is the store saying the same thing, so neither has to be trusted alone.
+                    store.create(account)
                     // Written after the Account exists, which is where the archive belongs.
                     if (importedCertificate != null) {
                         UiDependencies.restoreImportedCertificate(this, account.androidAccount, importedCertificate)

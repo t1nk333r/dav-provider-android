@@ -4,6 +4,7 @@ import android.accounts.Account
 import android.accounts.AccountManager
 import android.content.Context
 import xyz.satr.davprovider.core.ACCOUNT_TYPE
+import xyz.satr.davprovider.core.AccountExistsException
 import xyz.satr.davprovider.core.AccountStore
 import xyz.satr.davprovider.core.CredentialStore
 import xyz.satr.davprovider.core.CredentialsUnreadableException
@@ -74,6 +75,25 @@ class AccountManagerAccountStore(
     }
 
     /**
+     * Registers a new Account, refusing when one with this label is already on the device.
+     *
+     * The label is the Android account name, so this would not add a second account — it would
+     * write this record over the account that is there, replacing an address, a stored password, a
+     * certificate and a Collection selection the caller never saw and could not show. Refused
+     * rather than overwritten, and [save] is the way to say the update was meant.
+     */
+    override fun create(davAccount: DavAccount) {
+        // Only an Account the app can read is one worth refusing for. An account with no record —
+        // a save interrupted before its last step — holds nothing this form could overwrite, is
+        // not shown by the settings screen, and refusing for it would name an account the user
+        // cannot find. [save] adopts such an account, which is what registering it means.
+        if (list().any { it.label == davAccount.label }) {
+            throw AccountExistsException(davAccount.label)
+        }
+        save(davAccount)
+    }
+
+    /**
      * Creates the AccountManager account if it does not exist yet, then writes the record and its
      * Credentials.
      *
@@ -83,6 +103,10 @@ class AccountManagerAccountStore(
      * Credentials, so a half-written Account must read back as one whose Credentials cannot be read
      * — never as one with no Credentials, nor with an empty header value that fails as an
      * authentication error somewhere else entirely.
+     *
+     * This is the update path: it is total over whatever the Account holds now, so a caller that
+     * has not read the Account first will take its values away. Callers registering an account that
+     * should not exist yet want [create].
      */
     override fun save(davAccount: DavAccount) {
         val account = davAccount.androidAccount

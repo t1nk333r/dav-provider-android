@@ -58,12 +58,21 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="@string/label_note"
-            android:textAppearance="?attr/textAppearanceBodySmall" />
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?attr/colorOnSurfaceVariant" />
+
+        <!-- Sections are ruled off the way the settings screen rules off its own. Without a break
+             the page reads as one long column, and a note about a Collection reads like a fact
+             about the whole form. -->
+        <com.google.android.material.divider.MaterialDivider
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
+            android:layout_marginTop="12dp"
             android:text="@string/section_headers"
             android:textAppearance="?attr/textAppearanceTitleMedium" />
 
@@ -78,14 +87,18 @@
             android:layout_height="wrap_content"
             android:orientation="horizontal">
 
+            <!-- Outlined: both add something to the section above them. Save account is the only
+                 filled button on this page. -->
             <Button
                 android:id="@+id/add_header"
+                style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="@string/add_header" />
 
             <Button
                 android:id="@+id/cloudflare_shortcut"
+                style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
@@ -96,12 +109,18 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="@string/headers_note"
-            android:textAppearance="?attr/textAppearanceBodySmall" />
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?attr/colorOnSurfaceVariant" />
+
+        <com.google.android.material.divider.MaterialDivider
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
+            android:layout_marginTop="12dp"
             android:text="@string/section_certificate"
             android:textAppearance="?attr/textAppearanceTitleMedium" />
 
@@ -126,20 +145,25 @@
 
             <Button
                 android:id="@+id/choose_certificate"
+                style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="@string/choose_certificate" />
 
             <Button
                 android:id="@+id/import_certificate"
+                style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
                 android:text="@string/import_certificate" />
         </LinearLayout>
 
+        <!-- Text weight: it takes something away rather than adding it, so it is the quietest thing
+             this section has. -->
         <Button
             android:id="@+id/clear_certificate"
+            style="?attr/borderlessButtonStyle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="@string/clear_certificate" />
@@ -148,12 +172,18 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="@string/certificate_note"
-            android:textAppearance="?attr/textAppearanceBodySmall" />
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?attr/colorOnSurfaceVariant" />
+
+        <com.google.android.material.divider.MaterialDivider
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
+            android:layout_marginTop="12dp"
             android:text="@string/section_credentials"
             android:textAppearance="?attr/textAppearanceTitleMedium" />
 
@@ -197,6 +227,7 @@
 
         <Button
             android:id="@+id/clear_password"
+            style="?attr/borderlessButtonStyle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="@string/clear_password" />
@@ -205,13 +236,21 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="@string/credentials_note"
-            android:textAppearance="?attr/textAppearanceBodySmall" />
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?attr/colorOnSurfaceVariant" />
 
+        <com.google.android.material.divider.MaterialDivider
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp" />
+
+        <!-- The one filled button on the page, and the only full-width one: everything above it is
+             preparation for this. -->
         <Button
             android:id="@+id/save_account"
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
+            android:layout_marginTop="12dp"
             android:text="@string/save_account" />
 
         <TextView
@@ -259,12 +298,14 @@
 
                 <Button
                     android:id="@+id/probe_details_toggle"
+                    style="?attr/borderlessButtonStyle"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/details" />
 
                 <Button
                     android:id="@+id/probe_copy"
+                    style="?attr/borderlessButtonStyle"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginStart="8dp"
@@ -272,6 +313,7 @@
 
                 <Button
                     android:id="@+id/probe_close"
+                    style="?attr/borderlessButtonStyle"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginStart="8dp"

@@ -301,9 +301,9 @@ class SyncEngine(
         }
 
         // Step 6. With a sync token the server reports removals explicitly, so only those are
-        // deleted; a full listing instead justifies deleting everything it did not mention.
-        val keep = if (fullListing) members.byKey.keys else local.keys - members.removed
-        val deleted = deleteMissing(account, collection, members, keep)
+        // deleted; a full listing instead justifies deleting everything it did not mention. See
+        // [keptHrefs] for why the rows written above must be named in the answer.
+        val deleted = deleteMissing(account, collection, members, keptHrefs(fullListing, local.keys, members))
 
         // §7: re-apply server state and drop DIRTY, so an edit made in an editor that ignored
         // supportsUploading="false" reverts visibly within an interval.
@@ -469,3 +469,25 @@ class SyncEngine(
  * completed Collection for data that is about to disappear.
  */
 private class AccountVanishedException(cause: Throwable) : Exception(cause)
+
+/**
+ * The hrefs whose rows step 6 must not delete.
+ *
+ * Two answers, because the two kinds of listing say different things. A full listing names every
+ * member there is, so anything of the Collection's that it left out is gone. A delta names only
+ * what changed, so the rows it justifies deleting are the ones the server reported as removed, and
+ * everything else has to be kept whether or not this run touched it.
+ *
+ * "Everything else" must include the members fetched earlier in the same run, which is the thing
+ * [local] cannot do on its own: it is read before the first write, so it holds the Collection as it
+ * was. Deletion runs after the writes, and [ProviderMapper.deleteMissing] dooms every row whose href
+ * is absent from this set — so a delta that both removed and added members deleted its own additions
+ * on every run, and then recorded the Collection as complete, which is what kept it from ever
+ * coming back. Keeping a key with no row costs nothing, and the server has just listed these.
+ */
+internal fun keptHrefs(fullListing: Boolean, local: Set<String>, members: Members): Set<String> =
+    if (fullListing) {
+        members.byKey.keys
+    } else {
+        (local + members.byKey.keys) - members.removed
+    }

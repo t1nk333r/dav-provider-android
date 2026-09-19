@@ -14,6 +14,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.LayoutInflater
 import android.view.View
 import android.widget.Button
@@ -253,6 +255,33 @@ class SettingsActivity : AppCompatActivity() {
         // Listener last: re-rendering must not look like the user toggled something.
         unmeteredOnly.setOnCheckedChangeListener { _, checked -> writeUnmeteredOnly(screen, checked) }
 
+        // §8's interval: the row is where the Account's schedule is read, and tapping it is the
+        // only way it is changed.
+        val interval = card.findViewById<TextView>(R.id.account_interval)
+        interval.text = getString(
+            R.string.sync_interval_line,
+            intervalLabel(this, SyncPreferences(this).intervalSeconds(screen.account)),
+        )
+        interval.setOnClickListener { chooseInterval(screen) }
+
+        // §8's exemption row, which is offered only where there is evidence and the user has not
+        // already answered it. It states what was observed and leaves the conclusion to the user:
+        // what this app can see is when its own syncs ran, never what Android decided.
+        val battery = card.findViewById<LinearLayout>(R.id.account_battery)
+        if (batteryExemptionAdvised(screen.report, isBatteryOptimisationExempt())) {
+            battery.visibility = View.VISIBLE
+            card.findViewById<TextView>(R.id.account_battery_evidence).text =
+                getString(R.string.battery_evidence, screen.report?.missedSlots ?: 0)
+            card.findViewById<Button>(R.id.account_battery_request).setOnClickListener {
+                requestBatteryExemption()
+            }
+            card.findViewById<Button>(R.id.account_battery_dismiss).setOnClickListener {
+                dismissBatteryPrompt(screen)
+            }
+        } else {
+            battery.visibility = View.GONE
+        }
+
         card.findViewById<Button>(R.id.account_sync_now).setOnClickListener { requestManualSync(screen.account) }
         card.findViewById<Button>(R.id.account_sync_anyway).setOnClickListener { requestManualSync(screen.account) }
 
@@ -325,7 +354,7 @@ class SettingsActivity : AppCompatActivity() {
             }
             // §8: the schedule follows the selection, and it follows it here because this screen is
             // where an Account first comes to have something to sync.
-            SyncScheduler.applySelection(screen.account, updated)
+            SyncScheduler.applySelection(this, screen.account, updated)
             main.post { if (isActive()) refresh() }
         }
     }
@@ -343,6 +372,109 @@ class SettingsActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 main.post { if (isActive()) { showMessage(getString(R.string.save_failed, e.javaClass.simpleName)); refresh() } }
             }
+        }
+    }
+
+    /**
+     * §8's interval chooser: one answer, so a single-choice list rather than a second screen.
+     *
+     * The list opens on the interval the Account is actually on. An interval this build does not
+     * offer — userdata another build wrote — leaves nothing checked rather than checking the first
+     * option, which would show an answer the Account does not have.
+     *
+     * No message on the dialog: an `AlertDialog` renders either its message or its choice list, and
+     * the reason the shortest interval is the shortest is on the card, where it is read before the
+     * chooser is opened rather than instead of the choices.
+     */
+    private fun chooseInterval(screen: AccountScreen) {
+        val offered = SyncPreferences.OFFERED_INTERVAL_SECONDS
+        val labels = offered.map { intervalLabel(this, it) }.toTypedArray()
+        val checked = offered.indexOf(SyncPreferences(this).intervalSeconds(screen.account))
+        AlertDialog.Builder(this)
+            .setTitle(R.string.sync_interval_title)
+            .setSingleChoiceItems(labels, checked) { dialog, which ->
+                dialog.dismiss()
+                writeInterval(screen, offered[which])
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    /**
+     * The chosen interval is stored and the schedule is then re-applied from it, so it takes effect
+     * now instead of at the next run: a periodic sync is a persisted job, and the platform only
+     * learns of a change when it is told.
+     *
+     * The re-apply is the call selection writes already end with, which is what keeps one schedule
+     * per Account: it removes the periodic sync before adding it back, and it leaves an Account
+     * with nothing selected unscheduled even when its interval changed.
+     */
+    private fun writeInterval(screen: AccountScreen, seconds: Long) {
+        executor.execute {
+            try {
+                SyncPreferences(this).setIntervalSeconds(screen.account, seconds)
+                SyncScheduler.applySelection(this, screen.account, screen.davAccount.collections)
+            } catch (e: Exception) {
+                main.post { if (isActive()) { showMessage(getString(R.string.save_failed, e.javaClass.simpleName)); refresh() } }
+                return@execute
+            }
+            main.post { if (isActive()) refresh() }
+        }
+    }
+
+    /**
+     * Whether Android already lets this app's background work run unrestrained.
+     *
+     * Read on every render rather than remembered: the user can change it in the system settings at
+     * any moment, and the row that offers it must disappear as soon as it is granted.
+     */
+    private fun isBatteryOptimisationExempt(): Boolean =
+        getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(packageName) ?: false
+
+    /**
+     * §8's exemption request.
+     *
+     * `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` is normal-protection, so the manifest declaration plus
+     * this intent is the whole mechanism — there is no runtime grant to ask for. Google Play
+     * restricts the permission to apps that can state a need for it, which this one can: a sync
+     * provider whose periodic job is suppressed does not work. A published build would have to
+     * declare that need, so the row is justified or dropped rather than the declaration kept
+     * quietly.
+     */
+    private fun requestBatteryExemption() {
+        // Re-checked at the tap: the row was rendered from what was true then, and the only way it
+        // can be stale is that the user has since granted it in the system settings.
+        if (isBatteryOptimisationExempt()) {
+            refresh()
+            return
+        }
+        val intent = Intent(
+            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+            Uri.fromParts("package", packageName, null),
+        )
+        try {
+            startActivity(intent)
+        } catch (e: Exception) {
+            // Some devices ship no screen for this; being told where it lives beats a button that
+            // appears to do nothing.
+            showMessage(getString(R.string.battery_unavailable))
+        }
+    }
+
+    /**
+     * §8's permanent dismissal, written to the Account's own userdata so the answer lasts exactly
+     * as long as the evidence it silences: the prompt is offered once per Account, and an Account
+     * that is removed takes the answer with it rather than leaving it to silence another.
+     */
+    private fun dismissBatteryPrompt(screen: AccountScreen) {
+        executor.execute {
+            try {
+                SyncStatusStore(this).dismissBatteryPrompt(screen.account)
+            } catch (e: Exception) {
+                main.post { if (isActive()) showMessage(getString(R.string.save_failed, e.javaClass.simpleName)) }
+                return@execute
+            }
+            main.post { if (isActive()) refresh() }
         }
     }
 
@@ -383,7 +515,7 @@ class SettingsActivity : AppCompatActivity() {
             }
             // A Collection discovered here arrives unselected, so this usually keeps a selection's
             // schedule as it was; an Account that had none is left unscheduled until one is chosen.
-            SyncScheduler.applySelection(screen.account, merged)
+            SyncScheduler.applySelection(this, screen.account, merged)
             val added = merged.size - screen.davAccount.collections.size
             main.post {
                 if (!isActive()) return@post
@@ -458,7 +590,7 @@ class SettingsActivity : AppCompatActivity() {
             }
             // Re-adding a selected URL keeps the schedule it had; a new one is unselected and does
             // not start one.
-            SyncScheduler.applySelection(screen.account, updated)
+            SyncScheduler.applySelection(this, screen.account, updated)
             val name = collectionTitle(collection)
             main.post { if (isActive()) { showMessage(getString(R.string.collection_added, name)); refresh() } }
         }

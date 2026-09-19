@@ -47,6 +47,16 @@ data class AccountSyncReport(
     /** Set when the run failed outside any Collection — no usable Account, no usable client. */
     val error: SyncError?,
     val finishedAt: Long,
+    /**
+     * Whether the framework started this run, as opposed to the user asking for it.
+     *
+     * The distinction is §8's evidence and nothing else's: an automatic run is a scheduled slot
+     * that either arrived or did not, while a manual one happens whenever the user presses a button
+     * and therefore says nothing about the schedule in either direction. Without this flag a manual
+     * run would look exactly like an automatic one, and a "Sync now" between two missed slots would
+     * be read as the schedule recovering.
+     */
+    val automatic: Boolean,
 )
 
 /**

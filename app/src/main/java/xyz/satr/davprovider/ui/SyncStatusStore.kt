@@ -7,6 +7,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import xyz.satr.davprovider.core.ErrorClass
 import xyz.satr.davprovider.sync.SyncDeferralRecorder
+import xyz.satr.davprovider.sync.SyncPreferences
 
 /** How one Collection came out of the last run. [SKIPPED] is §5 class 3: information, not failure. */
 internal enum class CollectionOutcome { OK, FAILED, SKIPPED }
@@ -43,6 +44,10 @@ internal data class AuthorityReport(
  * [deferred] is §8's waiting state, and the one field here that no run produced: the last automatic
  * run did no work because the Account only syncs on unmetered networks. It survives leaving the
  * screen, and the next run that does happen clears it.
+ *
+ * [lastAutomaticAt], [missedSlots] and [batteryPromptDismissed] are §8's evidence that the schedule
+ * is or is not being kept. Zero means "no automatic run recorded yet", the same convention
+ * [lastSyncAt] uses for never, and no real timestamp is ever zero.
  */
 internal data class AccountReport(
     val status: AccountStatus,
@@ -51,6 +56,9 @@ internal data class AccountReport(
     val summary: String? = null,
     val deferred: Boolean = false,
     val authorities: Map<String, AuthorityReport> = emptyMap(),
+    val lastAutomaticAt: Long = 0L,
+    val missedSlots: Int = 0,
+    val batteryPromptDismissed: Boolean = false,
 ) {
     /**
      * The verdict to display.
@@ -93,33 +101,30 @@ internal val AccountStatus.severity: Int
  * Only §5 fields are stored — the classifier's summary, the class, the status and the method —
  * never a response body, a header value or a password.
  *
+ * The battery-optimisation dismissal is stored here for the same reason: it is a decision about one
+ * Account's schedule, and an Account that is removed must take it along rather than leave a prompt
+ * the user already answered to be shown again for a different server.
+ *
  * The rollup is the sync engine's, not this store's: it is the side that knows about terminal
  * classes and about a run that stopped early.
  */
 internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
 
-    private val manager = AccountManager.get(context.applicationContext)
+    private val appContext = context.applicationContext
+    private val manager = AccountManager.get(appContext)
 
     /** Null when nothing has been recorded, or when the record cannot be read. */
     fun read(account: Account): AccountReport? {
         val raw = manager.getUserData(account, KEY) ?: return null
-        return runCatching { decode(raw) }.getOrNull()
+        return runCatching { AccountReportJson.decode(raw) }.getOrNull()
     }
 
     /**
      * A run happened, so this carries the truth and any earlier deferral is over. That is what makes
      * a manual sync — or the next run on Wi-Fi — clear the waiting state without anyone asking.
      *
-     * The per-Collection list is **merged, not replaced**. Contacts and calendars are two separate
-     * runs that each report only their own Collections, so replacing the list let the second
-     * authority erase the first: a calendar that had just synced displayed "not synced yet"
-     * because the contacts run that followed it wrote a list it was not in. Collection ids are
-     * derived from the Collection URL and are therefore unique across authorities, which is what
-     * makes merging by id safe.
-     *
-     * A Collection that is deselected keeps its last entry rather than losing it, and the lookup
-     * that renders the row only asks about Collections the Account still has, so a stale entry is
-     * never shown — it is superseded the next time that Collection runs.
+     * What the run does to §8's evidence depends on whether the framework or the user started it,
+     * which is why [mergeRun] is asked rather than told.
      */
     fun record(
         account: Account,
@@ -128,22 +133,19 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
         status: AccountStatus,
         summary: String?,
         collections: List<CollectionReport>,
+        automatic: Boolean,
     ) {
-        val previous = read(account)
-        val merged = mergeCollectionReports(previous?.collections.orEmpty(), collections)
-        val authorities = previous?.authorities.orEmpty() +
-            (authority to AuthorityReport(status, summary))
-        manager.setUserData(
+        write(
             account,
-            KEY,
-            encode(
-                AccountReport(
-                    status = status,
-                    lastSyncAt = atMillis,
-                    collections = merged,
-                    summary = summary,
-                    authorities = authorities,
-                ),
+            mergeRun(
+                previous = read(account),
+                authority = authority,
+                atMillis = atMillis,
+                status = status,
+                summary = summary,
+                collections = collections,
+                automatic = automatic,
+                intervalSeconds = intervalSeconds(account),
             ),
         )
     }
@@ -157,27 +159,67 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
      * state that must not be silent.
      */
     override fun recordDeferred(account: Account) {
-        val previous = read(account)
-        manager.setUserData(
+        write(
             account,
-            KEY,
-            encode(
-                AccountReport(
-                    status = previous?.status ?: AccountStatus.NEVER_SYNCED,
-                    lastSyncAt = previous?.lastSyncAt ?: 0L,
-                    collections = previous?.collections.orEmpty(),
-                    summary = previous?.summary,
-                    deferred = true,
-                ),
+            mergeDeferral(
+                previous = read(account),
+                atMillis = System.currentTimeMillis(),
+                intervalSeconds = intervalSeconds(account),
             ),
         )
+    }
+
+    /**
+     * §8's permanent dismissal of the battery-optimisation prompt.
+     *
+     * Written where the evidence lives, so it lasts exactly as long as the Account does: the prompt
+     * is offered once per Account and never again, and the record it silences goes away with the
+     * Account rather than outliving it.
+     */
+    fun dismissBatteryPrompt(account: Account) {
+        read(account)?.let { write(account, it.copy(batteryPromptDismissed = true)) }
     }
 
     fun clear(account: Account) {
         manager.setUserData(account, KEY, null)
     }
 
-    private fun encode(report: AccountReport): String {
+    private fun write(account: Account, report: AccountReport) {
+        manager.setUserData(account, KEY, AccountReportJson.encode(report))
+    }
+
+    private fun intervalSeconds(account: Account): Long =
+        SyncPreferences(appContext).intervalSeconds(account)
+
+    private companion object {
+        const val KEY = "dav_sync_status_v1"
+    }
+}
+
+/**
+ * The record's shape on disk, and the only thing that knows it.
+ *
+ * [encode] and [decode] name no Android type, so the half worth arguing about — the arithmetic the
+ * record carries and what an older record means — can be exercised without a device. Records on
+ * people's devices are written by other builds: a field added here is absent there, and decoding one
+ * is not an error.
+ */
+internal object AccountReportJson {
+
+    private const val KEY_STATUS = "status"
+    private const val KEY_LAST_SYNC = "lastSyncAt"
+    private const val KEY_DEFERRED = "deferred"
+    private const val KEY_COLLECTIONS = "collections"
+    private const val KEY_COLLECTION_ID = "id"
+    private const val KEY_OUTCOME = "outcome"
+    private const val KEY_ERROR_CLASS = "errorClass"
+    private const val KEY_SUMMARY = "summary"
+    private const val KEY_AUTHORITIES = "authorities"
+    private const val KEY_LAST_AUTOMATIC = "lastAutomaticAt"
+    private const val KEY_MISSED_SLOTS = "missedSlots"
+    private const val KEY_BATTERY_DISMISSED = "batteryPromptDismissed"
+
+    fun encode(report: AccountReport): String {
         val collections = JSONArray()
         report.collections.forEach { entry ->
             collections.put(
@@ -193,8 +235,12 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
             put(KEY_STATUS, report.status.name)
             put(KEY_LAST_SYNC, report.lastSyncAt)
             report.summary?.let { put(KEY_SUMMARY, it) }
-            // Written only when set, so a record from before this field existed decodes unchanged.
+            // Written only when set, so a record from before these fields existed decodes unchanged
+            // — and so the text of a record says nothing it does not mean.
             if (report.deferred) put(KEY_DEFERRED, true)
+            if (report.lastAutomaticAt > 0L) put(KEY_LAST_AUTOMATIC, report.lastAutomaticAt)
+            if (report.missedSlots > 0) put(KEY_MISSED_SLOTS, report.missedSlots)
+            if (report.batteryPromptDismissed) put(KEY_BATTERY_DISMISSED, true)
             put(KEY_COLLECTIONS, collections)
             if (report.authorities.isNotEmpty()) {
                 put(
@@ -215,7 +261,7 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
         }.toString()
     }
 
-    private fun decode(raw: String): AccountReport {
+    fun decode(raw: String): AccountReport {
         val root = JSONObject(raw)
         val collections = root.optJSONArray(KEY_COLLECTIONS) ?: JSONArray()
         val entries = ArrayList<CollectionReport>(collections.length())
@@ -236,6 +282,11 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
             summary = root.optString(KEY_SUMMARY).takeIf { it.isNotEmpty() },
             deferred = root.optBoolean(KEY_DEFERRED, false),
             authorities = decodeAuthorities(root.optJSONObject(KEY_AUTHORITIES)),
+            // Absent in a record written before §8's evidence existed, and absent means none: the
+            // Account simply has nothing recorded about the schedule yet, which is not a missed slot.
+            lastAutomaticAt = root.optLong(KEY_LAST_AUTOMATIC),
+            missedSlots = root.optInt(KEY_MISSED_SLOTS, 0),
+            batteryPromptDismissed = root.optBoolean(KEY_BATTERY_DISMISSED, false),
         )
     }
 
@@ -257,19 +308,6 @@ internal class SyncStatusStore(context: Context) : SyncDeferralRecorder {
             )
         }
         return decoded
-    }
-
-    private companion object {
-        const val KEY = "dav_sync_status_v1"
-        const val KEY_STATUS = "status"
-        const val KEY_LAST_SYNC = "lastSyncAt"
-        const val KEY_DEFERRED = "deferred"
-        const val KEY_COLLECTIONS = "collections"
-        const val KEY_COLLECTION_ID = "id"
-        const val KEY_OUTCOME = "outcome"
-        const val KEY_ERROR_CLASS = "errorClass"
-        const val KEY_SUMMARY = "summary"
-        const val KEY_AUTHORITIES = "authorities"
     }
 }
 
@@ -295,3 +333,129 @@ internal fun mergeCollectionReports(
     reported.forEach { byId[it.collectionId] = it }
     return byId.values.toList()
 }
+
+/**
+ * The record after one run.
+ *
+ * §8's missed-slot evidence is decided here, and only from **automatic** runs: a manual run happens
+ * whenever the user asks, so it is neither evidence that the schedule fired nor evidence that it did
+ * not. It leaves the last automatic time and the count exactly as they were, which is what keeps a
+ * "Sync now" between two missed slots from being read as the schedule recovering.
+ */
+internal fun mergeRun(
+    previous: AccountReport?,
+    authority: String,
+    atMillis: Long,
+    status: AccountStatus,
+    summary: String?,
+    collections: List<CollectionReport>,
+    automatic: Boolean,
+    intervalSeconds: Long,
+): AccountReport = AccountReport(
+    status = status,
+    lastSyncAt = atMillis,
+    collections = mergeCollectionReports(previous?.collections.orEmpty(), collections),
+    summary = summary,
+    authorities = previous?.authorities.orEmpty() + (authority to AuthorityReport(status, summary)),
+    lastAutomaticAt = if (automatic) atMillis else previous?.lastAutomaticAt ?: 0L,
+    missedSlots = if (automatic) {
+        missedSlotsAfter(
+            previousAutomaticAt = previous?.lastAutomaticAt ?: 0L,
+            automaticAt = atMillis,
+            intervalSeconds = intervalSeconds,
+            previousMissedSlots = previous?.missedSlots ?: 0,
+        )
+    } else {
+        previous?.missedSlots ?: 0
+    },
+    // Carried, never cleared: the dismissal is the user's answer to the one prompt, and only
+    // removing the Account takes it back.
+    batteryPromptDismissed = previous?.batteryPromptDismissed ?: false,
+)
+
+/**
+ * The record after an automatic run deferred §8's unmetered-only rule.
+ *
+ * A deferral is a slot that fired: the framework asked, the Account's own setting answered. So it
+ * moves the last automatic time rather than leaving it behind — otherwise the card would end up
+ * accusing the system of suppressing syncs that this app's setting held back, which is the one
+ * accusation it must never make.
+ *
+ * A manual run never reaches here: the pre-flight lets the user's own request through before it
+ * considers the setting at all.
+ */
+internal fun mergeDeferral(
+    previous: AccountReport?,
+    atMillis: Long,
+    intervalSeconds: Long,
+): AccountReport = AccountReport(
+    status = previous?.status ?: AccountStatus.NEVER_SYNCED,
+    lastSyncAt = previous?.lastSyncAt ?: 0L,
+    collections = previous?.collections.orEmpty(),
+    summary = previous?.summary,
+    deferred = true,
+    authorities = previous?.authorities.orEmpty(),
+    lastAutomaticAt = atMillis,
+    missedSlots = missedSlotsAfter(
+        previousAutomaticAt = previous?.lastAutomaticAt ?: 0L,
+        automaticAt = atMillis,
+        intervalSeconds = intervalSeconds,
+        previousMissedSlots = previous?.missedSlots ?: 0,
+    ),
+    batteryPromptDismissed = previous?.batteryPromptDismissed ?: false,
+)
+
+/**
+ * A gap has to exceed this many of the Account's own intervals before the slots inside it count as
+ * missed. Twice: the framework's own scheduling has jitter, and a single late run is not evidence
+ * of anything.
+ */
+internal const val MISSED_SLOT_MULTIPLE = 2
+
+/** Missed slots before the account card offers §8's battery-optimisation exemption. */
+internal const val MISSED_SLOT_PROMPT_THRESHOLD = 3
+
+/**
+ * §8's arithmetic: the missed count after an automatic run.
+ *
+ * Counted from the gap between automatic runs rather than observed one slot at a time, because a
+ * suppressed schedule produces no runs to observe — the absence is the whole evidence. Every slot
+ * inside the gap is added rather than one per run, so a schedule that is consistently a little late
+ * reaches the threshold instead of being waved through as a small number each time.
+ *
+ * A run inside the first interval is not late at all, and one that arrived within
+ * [MISSED_SLOT_MULTIPLE] intervals is jitter: it resets the count, because a run that arrived is
+ * evidence the schedule is working and a count that survived it would keep accusing the system long
+ * after it recovered.
+ *
+ * A clock that moved backwards, and the first automatic run an Account ever has, are both silent
+ * rather than evidence: nothing can be compared, so nothing is concluded.
+ */
+internal fun missedSlotsAfter(
+    previousAutomaticAt: Long,
+    automaticAt: Long,
+    intervalSeconds: Long,
+    previousMissedSlots: Int,
+): Int {
+    if (previousAutomaticAt <= 0L || intervalSeconds <= 0L) return 0
+    val gap = automaticAt - previousAutomaticAt
+    if (gap <= 0L) return previousMissedSlots
+    val skipped = gap / (intervalSeconds * 1000L) - (MISSED_SLOT_MULTIPLE - 1)
+    if (skipped <= 0L) return 0
+    return (previousMissedSlots + skipped).toInt()
+}
+
+/**
+ * §8: whether the account card offers the battery-optimisation exemption.
+ *
+ * Three conditions, and all of them are necessary. There has to be evidence: the threshold is what
+ * makes this a pattern rather than one late run, and the prompt says what was observed rather than
+ * what it means. The user must not have dismissed it, because that answer is permanent and asking
+ * twice is the nagging this rule exists to prevent. And the app must not already be exempt, since a
+ * row asking for what is already granted asks the user to fix something that is not wrong.
+ */
+internal fun batteryExemptionAdvised(report: AccountReport?, alreadyExempt: Boolean): Boolean =
+    report != null &&
+        !alreadyExempt &&
+        !report.batteryPromptDismissed &&
+        report.missedSlots >= MISSED_SLOT_PROMPT_THRESHOLD

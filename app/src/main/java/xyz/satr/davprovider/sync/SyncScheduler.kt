@@ -2,6 +2,7 @@ package xyz.satr.davprovider.sync
 
 import android.accounts.Account
 import android.content.ContentResolver
+import android.content.Context
 import android.os.Bundle
 import android.provider.CalendarContract
 import android.provider.ContactsContract
@@ -9,15 +10,6 @@ import xyz.satr.davprovider.core.DavCollection
 
 /** The authorities this app syncs: one per platform provider, so §3's pairing is named once. */
 val SYNC_AUTHORITIES: List<String> = listOf(ContactsContract.AUTHORITY, CalendarContract.AUTHORITY)
-
-/**
- * The interval an Account is synced at.
- *
- * Fifteen minutes is not a preference: the framework runs a periodic sync as a persisted
- * `JobScheduler` job, whose minimum period is fifteen minutes, so a smaller number here would be a
- * promise the platform does not keep.
- */
-const val PERIODIC_SYNC_INTERVAL_SECONDS = 15L * 60
 
 /**
  * §8's schedule for an Account, in one place, so that no screen invents its own.
@@ -46,14 +38,21 @@ object SyncScheduler {
      * An Account with nothing selected has nothing to sync, and a periodic job that does nothing
      * forever is worse than no job — it is a wakeup, a run and a status line for a question nobody
      * asked. Selection is the only way an Account comes to have anything to sync, which is why this
-     * is the entry point every selection write ends with.
+     * is the entry point every selection write ends with — and the entry point a changed interval
+     * ends with too, since what it applies is the Account's whole schedule as it now stands.
      */
-    fun applySelection(account: Account, collections: List<DavCollection>) {
-        if (hasSyncableCollections(collections)) enable(account) else disable(account)
+    fun applySelection(context: Context, account: Account, collections: List<DavCollection>) {
+        if (hasSyncableCollections(collections)) enable(context, account) else disable(account)
     }
 
-    /** Whether the framework may sync this Account on its own, at [PERIODIC_SYNC_INTERVAL_SECONDS]. */
-    fun enable(account: Account) {
+    /**
+     * Whether the framework may sync this Account on its own, at the Account's own interval.
+     *
+     * The interval is read here rather than passed in so that there is one source for it: a caller
+     * that computed its own could schedule one interval and store another.
+     */
+    fun enable(context: Context, account: Account) {
+        val intervalSeconds = SyncPreferences(context).intervalSeconds(account)
         for (authority in SYNC_AUTHORITIES) {
             ContentResolver.setSyncAutomatically(account, authority, true)
             // Removed before it is added. The framework keys a periodic sync on the account, the
@@ -64,7 +63,7 @@ object SyncScheduler {
                 account,
                 authority,
                 PERIODIC_EXTRAS,
-                PERIODIC_SYNC_INTERVAL_SECONDS,
+                intervalSeconds,
             )
         }
     }

@@ -41,6 +41,28 @@
             android:layout_height="wrap_content"
             android:text="@string/sync_only_unmetered" />
 
+        <!-- Tapping opens the chooser; the row is the schedule's only display and only editor. -->
+        <TextView
+            android:id="@+id/account_interval"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="?attr/selectableItemBackground"
+            android:clickable="true"
+            android:focusable="true"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
+            android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+        <!-- The note belongs on the card rather than in the chooser: an AlertDialog shows either a
+             message or a single-choice list, not both, and the reason the floor is where it is is
+             worth having in front of the user before they open the chooser. -->
+        <TextView
+            android:id="@+id/account_interval_note"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/sync_interval_note"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
+
         <LinearLayout
             android:id="@+id/account_wifi"
             android:layout_width="match_parent"
@@ -61,6 +83,44 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="@string/sync_anyway" />
+        </LinearLayout>
+
+        <!--
+            §8's exemption row. Shown only where there is evidence for it and the user has not
+            answered it, so its presence is a fact about this Account's schedule rather than a
+            standing request.
+        -->
+        <LinearLayout
+            android:id="@+id/account_battery"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/account_battery_evidence"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textAppearance="?attr/textAppearanceBodySmall" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/account_battery_request"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/battery_exempt" />
+
+                <Button
+                    android:id="@+id/account_battery_dismiss"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/battery_dismiss" />
+            </LinearLayout>
         </LinearLayout>
 
         <TextView

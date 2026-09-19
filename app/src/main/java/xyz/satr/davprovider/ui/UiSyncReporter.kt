@@ -42,6 +42,8 @@ internal class UiSyncReporter(context: Context) : SyncReporter {
             status = accountStatus(report.status),
             summary = runSummary(report),
             collections = collections,
+            // §8's evidence needs to know whether the framework asked for this run or the user did.
+            automatic = report.automatic,
         )
         report.collections.forEach { outcome ->
             log.append(

@@ -643,7 +643,7 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
             // §8: a new Account is scheduled from here, and a new Account that arrives with nothing
             // selected is left unscheduled — a periodic job with nothing to sync is a wakeup for a
             // question nobody asked, and selecting a Collection is what enables the schedule.
-            SyncScheduler.applySelection(account, davAccount.collections)
+            SyncScheduler.applySelection(this, account, davAccount.collections)
             main.post { if (isActive()) onStored(davAccount) }
             // The check is a report, not a condition: the account is already saved either way.
             val outcome = DavProbe.propfind(

@@ -74,6 +74,40 @@ internal fun lastSyncLabel(context: Context, atMillis: Long): String =
     }
 
 /**
+ * §8's interval as the card and the chooser say it.
+ *
+ * A value nothing offers is spelled in minutes rather than replaced with the default: a build that
+ * offered more intervals, or one that offered fewer, still leaves the Account on the interval it
+ * was actually given, and a row that named a different one would describe a schedule the framework
+ * does not have.
+ */
+internal fun intervalLabel(context: Context, seconds: Long): String {
+    val label = intervalLabelResource(seconds)
+    return if (label == null) {
+        context.getString(R.string.interval_minutes, seconds / 60)
+    } else {
+        context.getString(label)
+    }
+}
+
+/**
+ * The string one interval is known by, or null when nothing offers it.
+ *
+ * Separate from [intervalLabel] so that "every interval the chooser offers has a name of its own"
+ * is checkable without a device: two options that rendered identically would be a chooser whose
+ * answer the user cannot predict.
+ */
+internal fun intervalLabelResource(seconds: Long): Int? = when (seconds) {
+    15L * 60 -> R.string.interval_15_minutes
+    30L * 60 -> R.string.interval_30_minutes
+    60L * 60 -> R.string.interval_hourly
+    2L * 60 * 60 -> R.string.interval_2_hours
+    6L * 60 * 60 -> R.string.interval_6_hours
+    24L * 60 * 60 -> R.string.interval_daily
+    else -> null
+}
+
+/**
  * A client certificate's expiry as a plain date, in the device's own zone.
  *
  * A date and not a verdict: an expired certificate is reported and offered, never refused, because

@@ -87,11 +87,16 @@ class SyncEngine(
     ) {
         val outcomes = mutableListOf<CollectionOutcome>()
 
+        // Read once, at the top: every exit from this method reports through it, and §8's missed-slot
+        // evidence has to be able to tell the framework's own runs from the user's.
+        val manual = extras.getBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, false)
+        val automatic = !manual
+
         try {
             ensureAccountRegistered(account)
         } catch (e: AccountVanishedException) {
             result.databaseError = true
-            report(account, outcomes, aborted = true, error = null)
+            report(account, outcomes, aborted = true, error = null, automatic = automatic)
             return
         }
 
@@ -102,13 +107,13 @@ class SyncEngine(
             val error = ErrorMapping(classifier, certificateOffered = false, certificateConfigured = false)
                 .classify(e, method = null)
             record(result, error)
-            report(account, outcomes, aborted = true, error = error)
+            report(account, outcomes, aborted = true, error = error, automatic = automatic)
             return
         }
         if (davAccount == null) {
             // Removed between the two reads, or its record was never completed.
             result.databaseError = true
-            report(account, outcomes, aborted = true, error = null)
+            report(account, outcomes, aborted = true, error = null, automatic = automatic)
             return
         }
 
@@ -116,7 +121,7 @@ class SyncEngine(
         // not open a connection, and one with nothing to do must not go looking for a certificate.
         when (
             val decision = preflight.decide(
-                manual = extras.getBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, false),
+                manual = manual,
                 unmeteredOnly = preferences.unmeteredOnly(account),
                 hasWork = collectionsOf(davAccount).isNotEmpty(),
             )
@@ -126,7 +131,7 @@ class SyncEngine(
             // §5's OK with no Collections, which is the honest answer and leaves a deferral ended
             // by this run cleared.
             RunDecision.NothingToDo -> {
-                report(account, outcomes, aborted = false, error = null)
+                report(account, outcomes, aborted = false, error = null, automatic = automatic)
                 return
             }
 
@@ -145,7 +150,7 @@ class SyncEngine(
             val error = ErrorMapping(classifier, certificateOffered = false, certificateConfigured = false)
                 .classify(e, method = null)
             record(result, error)
-            report(account, outcomes, aborted = true, error = error)
+            report(account, outcomes, aborted = true, error = error, automatic = automatic)
             return
         }
 
@@ -172,7 +177,7 @@ class SyncEngine(
             http.close()
         }
 
-        report(account, outcomes, aborted = aborted, error = null)
+        report(account, outcomes, aborted = aborted, error = null, automatic = automatic)
     }
 
     /**
@@ -417,6 +422,7 @@ class SyncEngine(
         outcomes: List<CollectionOutcome>,
         aborted: Boolean,
         error: SyncError?,
+        automatic: Boolean,
     ) {
         reporter.onSyncFinished(
             AccountSyncReport(
@@ -427,6 +433,7 @@ class SyncEngine(
                 aborted = aborted,
                 error = error,
                 finishedAt = clock(),
+                automatic = automatic,
             ),
         )
     }

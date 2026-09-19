@@ -15,6 +15,15 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Terminal failures notify (§5); transient ones deliberately do not. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!--
+        §8's battery-optimisation exemption. Normal protection level, so there is no runtime grant
+        to request: the declaration plus ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS is the whole
+        mechanism. Google Play restricts this permission to apps that declare a need for it, which
+        a sync provider whose periodic job is suppressed has — but a listing would have to state
+        that, so a published build must justify this row or drop it rather than leave the
+        declaration in place quietly.
+    -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:name=".DavProviderApplication"

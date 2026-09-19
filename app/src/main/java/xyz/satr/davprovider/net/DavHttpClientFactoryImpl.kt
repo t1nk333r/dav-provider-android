@@ -44,8 +44,12 @@ class DavHttpClientFactoryImpl(
             .writeTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
 
         davAccount.username?.let { builder.addInterceptor(BasicAuthInterceptor(it, davAccount.password)) }
-        // Added last, so a Header configured under a name Basic also uses is the one that is sent.
+        // Added after it, so a Header configured under a name Basic also uses is the one that is sent.
         builder.addInterceptor(DavHeaderInterceptor(davAccount.headers))
+        // Added last, so it sees what the two above attached. dav4jvm follows redirects itself, and
+        // its loop has no same-origin rule — this is what keeps a `Location` pointing elsewhere from
+        // being handed the Account.
+        builder.addInterceptor(OriginGuardInterceptor(davAccount.origin, davAccount.headers.map { it.name }))
 
         val keyManager = keyManagerFor(davAccount)
         if (keyManager != null) {

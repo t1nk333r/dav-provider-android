@@ -14,6 +14,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -23,6 +24,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.IntentCompat
 import androidx.core.widget.doAfterTextChanged
+import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.textfield.TextInputLayout
@@ -83,6 +85,9 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
     /** A picked archive, held until the Account exists to hold it. */
     private var pendingImport: PendingImport? = null
 
+    /** Whether the folded sections are open. Carried across a rotation with the rest of the form. */
+    private var advancedOpen = false
+
     /** Set by "Clear password"; typed text clears it again, so the intent is never stale. */
     private var passwordCleared = false
 
@@ -130,6 +135,15 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         )
 
         urlInput.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) defaultLabelFromUrl() }
+        // The up arrow is Back, through the same dispatcher, so leaving without saving still tells
+        // the authenticator the account was cancelled.
+        setSupportActionBar(findViewById(R.id.setup_toolbar))
+        supportActionBar?.setDisplayHomeAsUpEnabled(true)
+        supportActionBar?.setTitle(R.string.title_add_account)
+        findViewById<MaterialToolbar>(R.id.setup_toolbar).setNavigationOnClickListener {
+            onBackPressedDispatcher.onBackPressed()
+        }
+        findViewById<View>(R.id.setup_advanced_row).setOnClickListener { applyAdvanced(!advancedOpen) }
         findViewById<Button>(R.id.add_header).setOnClickListener { addHeaderRow("", "") }
         findViewById<Button>(R.id.cloudflare_shortcut).setOnClickListener { seedProxyHeaders() }
         findViewById<Button>(R.id.choose_certificate).setOnClickListener { chooseCertificate() }
@@ -160,6 +174,23 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
             },
         )
         restoreForm(savedInstanceState)
+        // Never hide something already filled in: a rotation restores the header rows and the chosen
+        // certificate, and folding them away would look like losing them.
+        if (advancedOpen || headerRows.childCount > 0 || certificate != null || usernameInput.text.isNotEmpty()) {
+            applyAdvanced(true)
+        }
+    }
+
+    /**
+     * Opens or closes the folded sections.
+     *
+     * One drawable rotated rather than two: an open-state chevron would be a second vector to keep
+     * in step with this one.
+     */
+    private fun applyAdvanced(open: Boolean) {
+        advancedOpen = open
+        findViewById<View>(R.id.setup_advanced_content).visibility = if (open) View.VISIBLE else View.GONE
+        findViewById<ImageView>(R.id.setup_chevron).rotation = if (open) 180f else 0f
     }
 
     /**
@@ -188,6 +219,7 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         outState.putString(KEY_CERT_ALIAS, (certificate as? ClientCertificateSource.KeyChainAlias)?.alias)
         outState.putBoolean(KEY_STORED, stored)
         outState.putBoolean(KEY_PASSWORD_CLEARED, passwordCleared)
+        outState.putBoolean(KEY_ADVANCED_OPEN, advancedOpen)
         outState.putString(KEY_SUMMARY, probeSummary.text?.toString())
         outState.putString(KEY_DETAILS, detailsText)
         outState.putBoolean(KEY_DETAILS_VISIBLE, probeDetails.visibility == View.VISIBLE)
@@ -200,6 +232,7 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
 
     private fun restoreForm(state: Bundle?) {
         if (state == null) return
+        advancedOpen = state.getBoolean(KEY_ADVANCED_OPEN)
         urlInput.setText(state.getString(KEY_URL))
         labelInput.setText(state.getString(KEY_LABEL))
         usernameInput.setText(state.getString(KEY_USERNAME))
@@ -821,6 +854,7 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         const val CERT_IMPORTED = "imported"
         const val KEY_STORED = "stored"
         const val KEY_PASSWORD_CLEARED = "passwordCleared"
+        const val KEY_ADVANCED_OPEN = "advancedOpen"
         const val KEY_HEADER_NAMES = "headerNames"
         const val KEY_SUMMARY = "summary"
         const val KEY_DETAILS = "details"

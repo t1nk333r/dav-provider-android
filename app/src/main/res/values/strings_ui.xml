@@ -3,11 +3,15 @@
 
     <!-- Account setup -->
 
-    <string name="setup_intro">One account is one server. Only the base URL is required.</string>
     <string name="field_base_url">Base URL (required)</string>
     <string name="field_label">Label</string>
     <string name="label_note">Defaults to the host. Identifies the account.</string>
     <string name="label_locked">The label identifies the account. To configure the same server twice, remove this account first.</string>
+    <string name="section_server">Server</string>
+    <!-- The three sections below are folded behind this one. URL and label are all most accounts
+         need; the rest is a long page to scroll past on the way to Save. -->
+    <string name="section_advanced">Advanced</string>
+    <string name="advanced_note">Headers, client certificate, the username and password.</string>
     <string name="section_headers">Headers</string>
     <string name="headers_note">Sent on every request. Values are secrets: replaceable, never shown again. Empty row keeps the stored value.</string>
     <string name="add_header">Add header</string>

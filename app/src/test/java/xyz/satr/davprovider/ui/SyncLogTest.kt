@@ -46,6 +46,7 @@ class SyncLogTest {
             unchanged = false,
             firstBodyLine = "<error xmlns=\"DAV:\">\tneed-privileges",
             davCondition = "need-privileges",
+            cause = "NullPointerException: Attempt to invoke virtual method on a null object reference at CalendarMapper:232",
         )
 
         val entry = log.read().single()
@@ -66,6 +67,10 @@ class SyncLogTest {
         // A tab inside a value must not become the next field.
         assertEquals("<error xmlns=\"DAV:\">\tneed-privileges", entry.firstBodyLine)
         assertEquals("need-privileges", entry.davCondition)
+        assertEquals(
+            "NullPointerException: Attempt to invoke virtual method on a null object reference at CalendarMapper:232",
+            entry.cause,
+        )
     }
 
     /**

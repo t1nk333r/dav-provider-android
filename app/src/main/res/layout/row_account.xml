@@ -80,6 +80,7 @@
 
             <Button
                 android:id="@+id/account_sync_anyway"
+                style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="@string/sync_anyway" />
@@ -110,12 +111,14 @@
 
                 <Button
                     android:id="@+id/account_battery_request"
+                    style="?attr/materialButtonOutlinedStyle"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/battery_exempt" />
 
                 <Button
                     android:id="@+id/account_battery_dismiss"
+                    style="?attr/borderlessButtonStyle"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginStart="8dp"
@@ -150,17 +153,24 @@
             android:layout_marginTop="8dp"
             android:orientation="horizontal">
 
+            <!-- The card's one filled button: syncing is what an account is for. It fills the row
+                 alone, and shares it with Diagnose only when a failure has put Diagnose there. -->
             <Button
                 android:id="@+id/account_sync_now"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
+                android:layout_weight="1"
                 android:text="@string/sync_now" />
 
+            <!-- Outlined, not filled: it varies credentials on purpose, so it should be reachable
+                 when an account has failed without being what a passer-by taps. -->
             <Button
                 android:id="@+id/account_diagnose"
-                android:layout_width="wrap_content"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
+                android:layout_weight="1"
                 android:text="@string/diagnose"
                 android:visibility="gone" />
         </LinearLayout>
@@ -170,14 +180,19 @@
             android:layout_height="wrap_content"
             android:orientation="horizontal">
 
+            <!-- Outlined: both are real, neither is what the card is for. Natural widths rather
+                 than a split down the middle, because "Add collection URL" is the longer of the
+                 two and would be the one to get cut. -->
             <Button
                 android:id="@+id/account_refresh_collections"
+                style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="@string/refresh_collections" />
 
             <Button
                 android:id="@+id/account_add_collection"
+                style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
@@ -185,11 +200,15 @@
 
         </LinearLayout>
 
+        <!-- Text weight and the error colour: the only thing on this screen that destroys data, so
+             the only thing that should not look like the others. -->
         <Button
             android:id="@+id/account_remove"
+            style="?attr/borderlessButtonStyle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="@string/remove_account" />
+            android:text="@string/remove_account"
+            android:textColor="?attr/colorError" />
 
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>

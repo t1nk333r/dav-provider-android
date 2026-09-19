@@ -36,47 +36,62 @@
         </LinearLayout>
     </ScrollView>
 
+    <!-- Where the cards end and the screen's own controls begin. Without it the two rows read as
+         part of the last account's card, which is the one thing down here that is not an account. -->
+    <com.google.android.material.divider.MaterialDivider
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:padding="12dp">
+        android:orientation="vertical"
+        android:paddingStart="16dp"
+        android:paddingTop="16dp"
+        android:paddingEnd="16dp">
 
+        <!-- The one filled button on the screen, because adding an account is the reason to be
+             here. Material 3 spends its strongest emphasis once per surface; when everything is
+             filled, nothing is. Full width so it reads as the primary action rather than the first
+             of four equals. -->
         <Button
             android:id="@+id/add_account"
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="@string/add_account" />
 
-        <Button
-            android:id="@+id/view_log"
+        <!-- Its sisters, at text-button weight: all three are rare beside the button above, and two
+             of them move account data on and off the device, so they are the last thing that should
+             invite a tap. Natural widths rather than an even split — "Export accounts" and "Import
+             accounts" are long, and splitting the row into thirds would cut them. -->
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:text="@string/log" />
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="4dp"
+            android:orientation="horizontal">
 
-    </LinearLayout>
+            <Button
+                android:id="@+id/view_log"
+                style="?attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/log" />
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:paddingStart="12dp"
-        android:paddingEnd="12dp"
-        android:paddingBottom="12dp">
+            <Button
+                android:id="@+id/export_accounts"
+                style="?attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/export_accounts" />
 
-        <Button
-            android:id="@+id/export_accounts"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/export_accounts" />
-
-        <Button
-            android:id="@+id/import_accounts"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:text="@string/import_accounts" />
+            <Button
+                android:id="@+id/import_accounts"
+                style="?attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/import_accounts" />
+        </LinearLayout>
 
     </LinearLayout>
 

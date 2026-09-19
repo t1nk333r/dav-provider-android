@@ -66,6 +66,7 @@ internal class UiSyncReporter(context: Context) : SyncReporter {
                 unchanged = outcome.unchanged,
                 firstBodyLine = outcome.error?.firstBodyLine,
                 davCondition = outcome.error?.davCondition,
+                cause = logCause(outcome.error?.cause),
             )
         }
         // Exactly one run-level entry, so "did this run sync anything" is one line to read.
@@ -83,6 +84,7 @@ internal class UiSyncReporter(context: Context) : SyncReporter {
             deleted = report.collections.sumOf { it.deleted },
             firstBodyLine = report.error?.firstBodyLine,
             davCondition = report.error?.davCondition,
+            cause = logCause(report.error?.cause),
         )
     }
 

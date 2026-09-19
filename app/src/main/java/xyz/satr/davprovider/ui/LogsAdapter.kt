@@ -153,6 +153,7 @@ internal fun logDetails(context: Context, entry: SyncLog.Entry): List<String> = 
     entry.method?.let { add(context.getString(R.string.details_method, it)) }
     entry.errorClass?.let { add(context.getString(R.string.details_class, it.name)) }
     entry.davCondition?.let { add(context.getString(R.string.details_condition, it)) }
+    entry.cause?.let { add(context.getString(R.string.details_cause, it)) }
     val written = entry.written
     val deleted = entry.deleted
     if (written != null && deleted != null) add(context.getString(R.string.log_counts, written, deleted))

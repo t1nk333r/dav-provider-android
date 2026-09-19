@@ -435,6 +435,7 @@ internal data class LogQuery(
             entry.displayName.mentions(needle) ||
             entry.collectionId.mentions(needle) ||
             entry.davCondition.mentions(needle) ||
+            entry.cause.mentions(needle) ||
             entry.firstBodyLine.mentions(needle)
     }
 

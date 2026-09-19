@@ -72,6 +72,8 @@ internal class SyncLog(private val file: File) {
         val unchanged: Boolean? = null,
         val firstBodyLine: String? = null,
         val davCondition: String? = null,
+        /** The failure's own words — see [logCause]. Null when the class said all there was. */
+        val cause: String? = null,
     )
 
     /**
@@ -94,6 +96,7 @@ internal class SyncLog(private val file: File) {
         unchanged: Boolean? = null,
         firstBodyLine: String? = null,
         davCondition: String? = null,
+        cause: String? = null,
     ) {
         write(
             listOf(
@@ -116,6 +119,7 @@ internal class SyncLog(private val file: File) {
                         unchanged = unchanged,
                         firstBodyLine = firstBodyLine,
                         davCondition = davCondition,
+                        cause = cause,
                     ),
                 ),
             ),
@@ -209,6 +213,7 @@ internal class SyncLog(private val file: File) {
         // The one value that comes from the server, and the only one long enough to matter.
         KEY_BODY to entry.firstBodyLine?.let { clip(it, MAX_BODY_LINE) },
         KEY_CONDITION to entry.davCondition,
+        KEY_CAUSE to entry.cause?.let { clip(it, MAX_CAUSE_CHARS) },
         KEY_SUMMARY to entry.summary,
     )
 
@@ -243,6 +248,7 @@ internal class SyncLog(private val file: File) {
             unchanged = fields[KEY_UNCHANGED]?.let { yesNoOrNull(it) },
             firstBodyLine = fields[KEY_BODY],
             davCondition = fields[KEY_CONDITION],
+            cause = fields[KEY_CAUSE],
         )
     }
 
@@ -290,6 +296,13 @@ internal class SyncLog(private val file: File) {
         /** §5 shows the first body line verbatim; a body is not always one line long. */
         const val MAX_BODY_LINE = 200
 
+        /**
+         * A failure's own words, which name the class and the parser that gave up. Longer than the
+         * body line because a cause chain is several exceptions deep and the innermost is the one
+         * worth reading.
+         */
+        const val MAX_CAUSE_CHARS = 400
+
         const val VERSION = "v2"
         const val TAB = '\t'
         const val SEPARATOR = "  "
@@ -313,6 +326,7 @@ internal class SyncLog(private val file: File) {
         const val KEY_UNCHANGED = "unchanged"
         const val KEY_BODY = "body"
         const val KEY_CONDITION = "condition"
+        const val KEY_CAUSE = "cause"
         const val KEY_SUMMARY = "summary"
 
         val LOCK = Any()
@@ -364,4 +378,50 @@ internal class SyncLog(private val file: File) {
 
         fun clip(text: String, max: Int): String = if (text.length <= max) text else text.take(max) + ELLIPSIS
     }
+}
+
+/** How deep a cause chain is worth reading before it stops saying anything new. */
+private const val MAX_CAUSE_DEPTH = 5
+
+/** This app's own classes, which is what a stack frame is looked for by — a frame inside a library
+ * says which library was running, not which call the app made. */
+private const val APP_PACKAGE = "xyz.satr.davprovider"
+
+/**
+ * A thrown failure in the log's own words: the exception classes from the outside in, each with the
+ * message it carried.
+ *
+ * The chain is the point, not the outermost class. What class a failure gets is decided by reading
+ * that chain — [xyz.satr.davprovider.sync.ErrorMapping] tells a body that could not be parsed from a
+ * connection that went away by which exceptions are in it — so an entry that recorded the class
+ * alone left those two looking identical in the log, which is exactly how a dropped event and a
+ * dropped connection came to read the same.
+ *
+ * Simple class names, because the package in front of `XmlPullParserException` adds nothing to it.
+ * Null when there is no cause, so the field is absent rather than empty on the entries that have
+ * nothing to add.
+ */
+internal fun logCause(cause: Throwable?): String? {
+    if (cause == null) return null
+    var deepest: Throwable? = null
+    val text = buildString {
+        var level: Throwable? = cause
+        var depth = 0
+        while (level != null && depth < MAX_CAUSE_DEPTH) {
+            if (depth > 0) append(" <- ")
+            append(level.javaClass.simpleName)
+            val message = level.message?.trim()
+            if (!message.isNullOrEmpty()) append(": ").append(message)
+            deepest = level
+            val next = level.cause
+            level = if (next === level) null else next
+            depth++
+        }
+    }
+    // Where it happened, for the failures that were not supposed to happen at all. An exception this
+    // code did not anticipate is a bug in the app, and the frame is what turns "couldn't be
+    // understood" into a line someone can act on; the classes above it only say what was being done.
+    val origin = deepest?.stackTrace?.firstOrNull { it.className.startsWith(APP_PACKAGE) }
+    return (if (origin == null) text else "$text at ${origin.className.substringAfterLast('.')}:${origin.lineNumber}")
+        .ifEmpty { null }
 }

@@ -21,6 +21,9 @@ the reference for what the code is meant to do. What is built:
   line of the response body, and whether a client certificate was offered — rather
   than reporting every failure as "no DAV services found"
 - A terminal-styled log of recent runs, with search, filters and share
+- Scheduling per account, including an unmetered-only mode, and a battery-optimisation
+  prompt that appears only with evidence — it reports that syncs have been running late
+  and leaves the conclusion to you rather than claiming to know why
 
 Not yet settled: the acceptance criteria name 16 events and the server yielded 13,
 so either the estimate was approximate or a few components did not survive the

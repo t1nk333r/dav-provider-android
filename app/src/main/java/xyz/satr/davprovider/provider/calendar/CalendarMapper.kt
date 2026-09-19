@@ -257,8 +257,11 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
         // Nothing about the Collection names a zone; UTC is at least a zone the platform has, and
         // every all-day row this mapper writes is UTC anyway.
         put(Calendars.CALENDAR_TIME_ZONE, "UTC")
-        // Null when the Collection names no colour: the provider then falls back to the account's.
-        put(Calendars.CALENDAR_COLOR, collection.color)
+        // Written only when the Collection names one. A null Integer under this key is not "no
+        // colour" to the provider, it is a value it cannot read: the row is stored with a null in a
+        // column it unboxes on the way in, the insert throws, and the whole Collection fails as
+        // though the server had answered badly. Leaving the key out is what falls back.
+        collection.color?.let { put(Calendars.CALENDAR_COLOR, it) }
     }
 
     // ---------------------------------------------------------------- writes

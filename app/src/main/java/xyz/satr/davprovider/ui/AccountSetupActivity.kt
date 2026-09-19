@@ -41,6 +41,7 @@ import xyz.satr.davprovider.core.ClientCertificateStore
 import xyz.satr.davprovider.core.CredentialsUnreadableException
 import xyz.satr.davprovider.core.DavAccount
 import xyz.satr.davprovider.core.DavHeader
+import xyz.satr.davprovider.core.readBounded
 import xyz.satr.davprovider.error.credentialsUnreadable
 import xyz.satr.davprovider.sync.SyncScheduler
 
@@ -70,6 +71,9 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
     private lateinit var urlInput: EditText
     private lateinit var labelInput: EditText
     private lateinit var labelNote: TextView
+
+    /** The note under the URL, which only ever says one thing: this address is not encrypted. */
+    private lateinit var urlNote: TextView
 
     /** The note's own colour, put back when the label stops colliding with an account. */
     private var labelNoteColor: Int = 0
@@ -136,6 +140,8 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         labelInput = findViewById(R.id.label_input)
         labelNote = findViewById(R.id.label_note)
         labelNoteColor = labelNote.currentTextColor
+        urlNote = findViewById(R.id.url_note)
+        urlNote.setText(R.string.url_cleartext)
         headerRows = findViewById(R.id.header_rows)
         certStatusView = findViewById(R.id.cert_status)
         certDetailsView = findViewById(R.id.cert_details)
@@ -174,7 +180,10 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         findViewById<Button>(R.id.clear_password).setOnClickListener { clearPassword() }
         // Material's box keeps its error until something clears it, and a complaint that the URL is
         // missing has no business sitting under a field that now has one.
-        urlInput.doAfterTextChanged { urlInput.fieldError(null) }
+        urlInput.doAfterTextChanged {
+            urlInput.fieldError(null)
+            updateUrlNote()
+        }
         // The label can arrive without being typed: it is derived from the host when the URL field
         // loses focus, and Save derives it too.
         labelInput.doAfterTextChanged { updateLabelNote() }
@@ -366,10 +375,13 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
     private fun readArchive(uri: Uri) {
         executor.execute {
             val archive = try {
-                contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                contentResolver.openInputStream(uri)?.use { readBounded(it) }
                     ?: throw IllegalStateException("the picked file could not be opened")
             } catch (e: Exception) {
-                val message = getString(R.string.certificate_unreadable, e.javaClass.simpleName)
+                // The message, when there is one: readBounded explains that a file was too large,
+                // and reporting the class instead would hide the only useful part.
+                val reason = e.message ?: e.javaClass.simpleName
+                val message = getString(R.string.certificate_unreadable, reason)
                 main.post { if (isActive()) showCertificateFailure(message) }
                 return@execute
             }
@@ -662,6 +674,18 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
     }
 
     // ------------------------------------------------------------ label
+
+    /**
+     * The note under the URL, which says the one thing about a scheme the field cannot: `http://`
+     * sends everything this account carries in the clear.
+     *
+     * A warning and not a refusal. A server on a network the user trusts is a documented use, and
+     * the field already accepts both schemes; what was missing was saying which one this is.
+     */
+    private fun updateUrlNote() {
+        val cleartext = urlInput.text.toString().trim().toHttpUrlOrNull()?.scheme == "http"
+        urlNote.visibility = if (cleartext) View.VISIBLE else View.GONE
+    }
 
     /**
      * The note under the label. Before Save it is the only place a collision can be seen, and the

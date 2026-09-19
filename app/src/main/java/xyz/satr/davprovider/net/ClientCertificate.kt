@@ -21,6 +21,7 @@ import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509ExtendedKeyManager
 import javax.net.ssl.X509KeyManager
 import javax.net.ssl.X509TrustManager
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import xyz.satr.davprovider.core.ClientIdentity
 
 /**
@@ -160,20 +161,14 @@ internal data class Peer(val host: String, val port: Int)
  * Whether [origin] — an Account's own `scheme://host:port` — names [peer].
  *
  * The port is compared, not just the host: another port on the same host is another origin as far
- * as this decision goes. A port of `-1` is what an Account's origin carries for a URL that names no
- * port, and it means the scheme's default, because the peer's port is always the real one.
+ * as this decision goes. It is also what tells `https://host` from `http://host`, since the origin
+ * now carries the port its scheme implies.
  */
 internal fun originAllows(origin: String?, peer: Peer?): Boolean {
     if (origin == null || peer == null) return false
-    val separator = origin.indexOf("://")
-    if (separator <= 0) return false
-    val authority = origin.substring(separator + 3)
-    val colon = authority.lastIndexOf(':')
-    if (colon <= 0) return false
-    val host = authority.substring(0, colon).trim('[', ']')
-    val port = authority.substring(colon + 1).toIntOrNull() ?: return false
-    val expectedPort = if (port >= 0) port else defaultPort(origin.substring(0, separator))
-    return host.equals(peer.host.trim('[', ']'), ignoreCase = true) && expectedPort == peer.port
+    val expected = origin.toHttpUrlOrNull() ?: return false
+    val host = expected.host.trim('[', ']')
+    return host.equals(peer.host.trim('[', ']'), ignoreCase = true) && expected.port == peer.port
 }
 
 /**
@@ -192,12 +187,6 @@ internal fun accepts(keyTypes: Array<out String>?, key: PrivateKey): Boolean {
 
 private const val RSA = "RSA"
 private const val PSS = "RSASSA-PSS"
-
-private fun defaultPort(scheme: String): Int = when (scheme.lowercase(Locale.ROOT)) {
-    "https" -> 443
-    "http" -> 80
-    else -> -1
-}
 
 /**
  * JSSE names key types by algorithm; RSA and EC are what a client certificate holds in practice.

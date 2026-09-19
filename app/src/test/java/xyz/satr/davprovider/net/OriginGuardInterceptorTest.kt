@@ -33,10 +33,10 @@ class OriginGuardInterceptorTest {
         assertEquals("service-token", outgoing.header("CF-Access-Client-Secret"))
     }
 
-    /** An origin with no port is written `:-1`, and it means the scheme's default. */
+    /** The origin always names its port; a request URL need not. Both spell the same origin. */
     @Test
-    fun `an explicit default port is the same origin`() {
-        val outgoing = outgoing("https://dav.example:-1", "https://dav.example:443/addressbooks/user/")
+    fun `a URL that names no port is still the account's own origin`() {
+        val outgoing = outgoing(ORIGIN, "https://dav.example/addressbooks/user/")
 
         assertEquals(BASIC, outgoing.header("Authorization"))
         assertEquals("service-token", outgoing.header("CF-Access-Client-Id"))
@@ -85,8 +85,8 @@ class OriginGuardInterceptorTest {
     }
 
     private companion object {
-        /** What `DavAccount.origin` holds for a base URL that names no port. */
-        const val ORIGIN = "https://dav.example:-1"
+        /** What `DavAccount.origin` holds: the port is resolved, so an origin always names one. */
+        const val ORIGIN = "https://dav.example:443"
         const val BASIC = "Basic dXNlcjpwYXNzd29yZA=="
         val HEADER_NAMES = listOf("CF-Access-Client-Id", "CF-Access-Client-Secret")
     }

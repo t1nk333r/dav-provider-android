@@ -40,6 +40,7 @@ import xyz.satr.davprovider.core.CredentialsUnreadableException
 import xyz.satr.davprovider.core.DavAccount
 import xyz.satr.davprovider.core.DavCollection
 import xyz.satr.davprovider.core.SyncError
+import xyz.satr.davprovider.core.readBounded
 import xyz.satr.davprovider.error.credentialsUnreadable
 import xyz.satr.davprovider.sync.SyncPreferences
 import xyz.satr.davprovider.sync.SyncScheduler
@@ -860,10 +861,12 @@ class SettingsActivity : AppCompatActivity() {
         showMessage(getString(R.string.import_working))
         executor.execute {
             val document = try {
-                contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
-                    ?: error("the picked file could not be opened")
+                contentResolver.openInputStream(uri)?.use {
+                    readBounded(it).toString(Charsets.UTF_8)
+                } ?: error("the picked file could not be opened")
             } catch (e: Exception) {
-                val message = getString(R.string.import_failed, e.javaClass.simpleName)
+                // The message, when there is one: readBounded explains that a file was too large.
+                val message = getString(R.string.import_failed, e.message ?: e.javaClass.simpleName)
                 main.post { if (isActive()) showMessage(message) }
                 return@execute
             }

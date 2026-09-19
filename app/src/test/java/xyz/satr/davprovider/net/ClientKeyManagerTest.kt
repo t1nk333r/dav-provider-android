@@ -21,10 +21,10 @@ class ClientKeyManagerTest {
 
     @Test
     fun `the Account's origin is the only peer the identity is released to`() {
-        // The origin an Account builds for a URL with no port: the port is left as -1 and means the
-        // scheme's default, while a handshake always reports the real port.
+        // The origin an Account builds for a URL that names no port: the port is resolved to the one
+        // its scheme implies, which is the port a handshake always reports.
         val origin = DavAccount(label = "server", baseUrl = "https://dav.invalid/root/").origin
-        assertEquals("https://dav.invalid:-1", origin)
+        assertEquals("https://dav.invalid:443", origin)
         val manager = ClientKeyManager(ALIAS, origin) { identity() }
 
         assertEquals(ALIAS, manager.select(RSA_KEY_TYPES, Peer("dav.invalid", 443)))

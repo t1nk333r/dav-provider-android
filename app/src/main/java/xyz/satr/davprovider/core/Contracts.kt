@@ -1,6 +1,7 @@
 package xyz.satr.davprovider.core
 
 import android.accounts.Account
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 
 /**
@@ -72,8 +73,16 @@ data class DavAccount(
 ) {
     val androidAccount: Account get() = Account(label, ACCOUNT_TYPE)
 
-    /** The origin an identity may be released to. A redirect elsewhere must never receive it. */
-    val origin: String? get() = runCatching { java.net.URI(baseUrl).let { "${it.scheme}://${it.host}:${it.port}" } }.getOrNull()
+    /**
+     * The origin an identity may be released to. A redirect elsewhere must never receive it.
+     *
+     * Built from OkHttp's parser rather than `java.net.URI`, whose `host` is null for a name that is
+     * not ASCII: an account on one produced the origin `https://null:-1`, which matches no peer, so
+     * its certificate was never offered and the failure looked like a TLS or authentication problem.
+     * `HttpUrl` resolves the port as well, so an origin has one spelling rather than one per way of
+     * writing the URL.
+     */
+    val origin: String? get() = baseUrl.toHttpUrlOrNull()?.let { "${it.scheme}://${it.host}:${it.port}" }
 }
 
 // ---------------------------------------------------------------- errors

@@ -149,6 +149,10 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
         if (resources.isEmpty()) return 0
         assertAccountRegistered(account)
         val calendarId = ensureCalendar(account, collection)
+        // One query for the batch's rows rather than one per resource. A batch of fifty would
+        // otherwise be fifty provider round trips to ask questions this Collection already answers,
+        // and every one of them runs on the sync thread.
+        val claimed = rowsClaiming(account, calendarId, resources.keys)
         var rows = 0
         for ((name, body) in resources) {
             val resource = try {
@@ -158,7 +162,8 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
                 Log.w(TAG, "Skipping $name: not usable as iCalendar", e)
                 continue
             }
-            rows += ResourceWriter(account, calendarId, name, resource, etags[name]).write()
+            val existing = claimed[name].orEmpty()
+            rows += ResourceWriter(account, calendarId, name, resource, etags[name], existing).write()
         }
         return rows
     }
@@ -235,6 +240,47 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
         return id
     }
 
+    /**
+     * The rows claiming any of [names], keyed by the resource each one claims.
+     *
+     * Both identities at once: a resource's rows are its master, which carries `_SYNC_ID`, and its
+     * overrides, which name the resource through `ORIGINAL_SYNC_ID` instead. A malformed row can
+     * claim two names — it is listed under each, exactly as the per-resource query would have
+     * returned it.
+     */
+    private fun rowsClaiming(
+        account: Account,
+        calendarId: Long,
+        names: Collection<String>,
+    ): Map<String, List<ExistingRow>> {
+        if (names.isEmpty()) return emptyMap()
+        val placeholders = names.joinToString(",") { "?" }
+        val selection = "${Events.CALENDAR_ID}=? AND (${Events._SYNC_ID} IN ($placeholders) " +
+            "OR ${Events.ORIGINAL_SYNC_ID} IN ($placeholders))"
+        val args = (listOf(calendarId.toString()) + names + names).toTypedArray()
+        val rows = ArrayList<ExistingRow>()
+        resolver.query(
+            eventsUri(account),
+            arrayOf(Events._ID, Events._SYNC_ID, Events.ORIGINAL_SYNC_ID, Events.ORIGINAL_INSTANCE_TIME, Events.ORIGINAL_ALL_DAY),
+            selection,
+            args,
+            null,
+        )?.use { cursor ->
+            while (cursor.moveToNext()) {
+                rows.add(
+                    ExistingRow(
+                        id = cursor.getLong(0),
+                        syncId = cursor.getString(1),
+                        originalSyncId = cursor.getString(2),
+                        originalInstanceTime = if (cursor.isNull(3)) null else cursor.getLong(3),
+                        originalAllDay = if (cursor.isNull(4)) false else cursor.getInt(4) != 0,
+                    ),
+                )
+            }
+        }
+        return rowsByClaim(rows, names)
+    }
+
     private fun findCalendarId(account: Account, collection: DavCollection): Long? {
         val selection = "${Calendars.ACCOUNT_NAME}=? AND ${Calendars.ACCOUNT_TYPE}=? AND ${Calendars.NAME}=?"
         val args = arrayOf(account.name, account.type, collection.id)
@@ -273,6 +319,8 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
         private val name: String,
         private val resource: ParsedResource,
         private val etag: String?,
+        /** The rows claiming this resource, read once for the whole batch by [rowsClaiming]. */
+        private val existing: List<ExistingRow>,
     ) {
         private val nowMillis = System.currentTimeMillis()
         private val fallbackZone: ZoneId = ZoneId.systemDefault()
@@ -292,7 +340,6 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
                 Log.w(TAG, "$name: ${resource.master.unrepresentableDates} RDATE/EXDATE entry(ies) had no storable form")
             }
 
-            val existing = existingRows()
             val kept = HashSet<Long>()
             var written = 0
 
@@ -347,32 +394,6 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
             // thing keeping the resource name unique per calendar.
             deleteIds(account, existing.filter { it.id !in kept }.map { it.id })
             return written
-        }
-
-        private fun existingRows(): List<ExistingRow> {
-            val selection = "${Events.CALENDAR_ID}=? AND (${Events._SYNC_ID}=? OR ${Events.ORIGINAL_SYNC_ID}=?)"
-            val args = arrayOf(calendarId.toString(), name, name)
-            val rows = ArrayList<ExistingRow>()
-            resolver.query(
-                eventsUri(account),
-                arrayOf(Events._ID, Events._SYNC_ID, Events.ORIGINAL_SYNC_ID, Events.ORIGINAL_INSTANCE_TIME, Events.ORIGINAL_ALL_DAY),
-                selection,
-                args,
-                null,
-            )?.use { cursor ->
-                while (cursor.moveToNext()) {
-                    rows.add(
-                        ExistingRow(
-                            id = cursor.getLong(0),
-                            syncId = cursor.getString(1),
-                            originalSyncId = cursor.getString(2),
-                            originalInstanceTime = if (cursor.isNull(3)) null else cursor.getLong(3),
-                            originalAllDay = if (cursor.isNull(4)) false else cursor.getInt(4) != 0,
-                        ),
-                    )
-                }
-            }
-            return rows.sortedBy { it.id }
         }
 
         private fun timesOf(event: ParsedEvent): EventTimes? {
@@ -507,7 +528,7 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
         }
     }
 
-    private data class ExistingRow(
+    internal data class ExistingRow(
         val id: Long,
         val syncId: String?,
         val originalSyncId: String?,
@@ -581,3 +602,27 @@ private fun JSONObject.stringOrNull(key: String): String? =
 
 private fun JSONObject.booleanOrNull(key: String): Boolean? =
     if (!has(key) || isNull(key)) null else optBoolean(key)
+
+/**
+ * The rows claiming one of [names], keyed by the name each claims, each list in row order.
+ *
+ * The grouping that makes one query per batch enough: [CalendarMapper.rowsClaiming] reads every row
+ * the batch could touch in a single pass, and this puts each where its writer will look for it.
+ *
+ * Both identities at once, because a resource's rows are its master, which carries `_SYNC_ID`, and
+ * its overrides, which name the resource through `ORIGINAL_SYNC_ID` instead. A malformed row can
+ * claim two names — it appears under each, exactly as a per-resource query would have returned it —
+ * and a row claiming neither is left out, which is what keeps a row matched only by a shared
+ * `ORIGINAL_SYNC_ID` from being handed to a writer it does not belong to.
+ */
+internal fun rowsByClaim(
+    rows: List<CalendarMapper.ExistingRow>,
+    names: Collection<String>,
+): Map<String, List<CalendarMapper.ExistingRow>> {
+    val claimed = HashMap<String, MutableList<CalendarMapper.ExistingRow>>()
+    for (row in rows) {
+        row.syncId?.takeIf { it in names }?.let { claimed.getOrPut(it) { ArrayList() }.add(row) }
+        row.originalSyncId?.takeIf { it in names }?.let { claimed.getOrPut(it) { ArrayList() }.add(row) }
+    }
+    return claimed.mapValues { (_, claiming) -> claiming.sortedBy { it.id } }
+}

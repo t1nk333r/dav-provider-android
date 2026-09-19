@@ -86,7 +86,7 @@ internal object DavProbe {
         }
         return try {
             client.okHttp.newCall(request(url, depth = 0, body = PROPFIND_BODY)).execute().use { response ->
-                val evidence = HttpEvidence.of(response, client)
+                val evidence = HttpEvidence.ofWholeBody(response, client)
                 ProbeOutcome(variant, classifier.classify(evidence), evidence)
             }
         } catch (e: IOException) {
@@ -134,7 +134,7 @@ internal object DavProbe {
                 return DavAttempt(target, hops, ProbeOutcome(variant, classifier.classify(evidence), evidence))
             }
             response.use { answered ->
-                val evidence = HttpEvidence.of(answered, client)
+                val evidence = HttpEvidence.ofWholeBody(answered, client)
                 val error = classifier.classify(evidence)
                 val next = nextHop(
                     current = target,

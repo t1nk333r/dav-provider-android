@@ -146,6 +146,13 @@ class SettingsActivity : AppCompatActivity() {
         val report: AccountReport?,
         /** The certificate line, already rendered: reading an imported identity is not free. */
         val certificate: String?,
+        /**
+         * An Account with no server: its configuration was removed and its rows were kept, so there
+         * is nothing to sync and nothing to show a sync's outcome for. The record's own address is
+         * the signal — an Account that has never been filled in does not exist, because a record is
+         * only written by a save.
+         */
+        val disconnected: Boolean = davAccount.baseUrl.isEmpty(),
     )
 
     private var askedProviderPermissions = false
@@ -226,6 +233,8 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun accountCard(screen: AccountScreen, highlighted: Boolean): View {
+        if (screen.disconnected) return disconnectedCard(screen, highlighted)
+
         val card = LayoutInflater.from(this).inflate(R.layout.row_account, accountsContainer, false)
         val status = screen.report?.composedStatus ?: AccountStatus.NEVER_SYNCED
 
@@ -296,6 +305,41 @@ class SettingsActivity : AppCompatActivity() {
         card.findViewById<Button>(R.id.account_add_collection).setOnClickListener { addCollection(screen) }
         card.findViewById<Button>(R.id.account_remove).setOnClickListener { confirmRemove(screen) }
         return card
+    }
+
+    /**
+     * The card for an Account whose configuration has been removed and whose data has not.
+     *
+     * Nothing here is a failure, so nothing here reads like one: no recorded outcome, no schedule,
+     * no certificate, no Collections. Showing the last run's report would say a sync had failed,
+     * and the truth is that no sync is coming.
+     */
+    private fun disconnectedCard(screen: AccountScreen, highlighted: Boolean): View {
+        val card = LayoutInflater.from(this)
+            .inflate(R.layout.row_account_disconnected, accountsContainer, false)
+        val label = card.findViewById<TextView>(R.id.account_label)
+        label.text = screen.davAccount.label
+        if (highlighted) label.setTypeface(label.typeface, Typeface.BOLD)
+        card.findViewById<TextView>(R.id.account_status).text = getString(
+            R.string.status_line,
+            getString(R.string.status_disconnected),
+            getString(R.string.status_detail_disconnected),
+        )
+        card.findViewById<Button>(R.id.account_configure).setOnClickListener { configure(screen) }
+        card.findViewById<Button>(R.id.account_remove).setOnClickListener { confirmRemove(screen) }
+        return card
+    }
+
+    /**
+     * Opens the setup screen on an Account that already exists, so its configuration can be filled
+     * in again. The Account is never removed on the way, so what it synced stays where it is: the
+     * rows belong to it and it is the same account after this as before, with a server again.
+     */
+    private fun configure(screen: AccountScreen) {
+        startActivity(
+            Intent(this, AccountSetupActivity::class.java)
+                .putExtra(EXTRA_RECONFIGURE, screen.davAccount.label),
+        )
     }
 
     private fun collectionRow(screen: AccountScreen, collection: DavCollection, parent: LinearLayout): View {
@@ -655,23 +699,37 @@ class SettingsActivity : AppCompatActivity() {
         container.addView(row)
     }
 
+    /**
+     * Keeping the synced contacts and events is what happens when the user says nothing. Removal
+     * used to take them away, so the outcome that destroys them is the one that has to be reached
+     * for rather than fallen into.
+     */
     private fun confirmRemove(screen: AccountScreen) {
+        val view = layoutInflater.inflate(R.layout.dialog_remove_account, null)
+        view.findViewById<TextView>(R.id.remove_message).setText(R.string.remove_account_message)
+        val alsoDelete = view.findViewById<CheckBox>(R.id.remove_also_delete)
+        alsoDelete.setText(R.string.remove_also_delete)
         MaterialAlertDialogBuilder(this)
             .setTitle(getString(R.string.remove_account_title, screen.davAccount.label))
-            .setMessage(R.string.remove_account_message)
-            .setPositiveButton(R.string.remove) { _, _ -> remove(screen) }
+            .setView(view)
+            .setPositiveButton(R.string.remove) { _, _ -> remove(screen, alsoDelete.isChecked) }
             .setNegativeButton(R.string.cancel, null)
             .show()
     }
 
-    private fun remove(screen: AccountScreen) {
+    /** [alsoDelete] is the user having asked for the synced rows to go with the account. */
+    private fun remove(screen: AccountScreen, alsoDelete: Boolean) {
         executor.execute {
             // While the Account still exists, because the schedule is the framework's and is keyed
             // by the Account's name and type: a periodic job left behind would wake the device to
             // sync an Account nothing resolves.
             SyncScheduler.cancel(screen.account)
+            val store = UiDependencies.accountStore(this)
             try {
-                UiDependencies.accountStore(this).delete(screen.account)
+                store.disconnect(screen.account)
+                // The providers reap the rows of an account that is gone (spec §7), so removing the
+                // account is the only way to take the rows with it — and it is what was asked for.
+                if (alsoDelete) store.delete(screen.account)
             } catch (e: Exception) {
                 main.post { if (isActive()) showMessage(getString(R.string.save_failed, e.javaClass.simpleName)) }
                 return@execute
@@ -680,7 +738,12 @@ class SettingsActivity : AppCompatActivity() {
             SyncLog(this).forget(screen.davAccount.label)
             SyncNotifications(this).dismiss(screen.davAccount.label)
             val label = screen.davAccount.label
-            main.post { if (isActive()) { showMessage(getString(R.string.account_removed, label)); refresh() } }
+            val message = if (alsoDelete) {
+                getString(R.string.account_removed, label)
+            } else {
+                getString(R.string.account_disconnected)
+            }
+            main.post { if (isActive()) { showMessage(message); refresh() } }
         }
     }
 

@@ -86,6 +86,8 @@
     <string name="status_partial">Partial</string>
     <string name="status_failed">Failed</string>
     <string name="status_never_synced">Not synced yet</string>
+    <string name="status_disconnected">Disconnected</string>
+    <string name="status_detail_disconnected">its server address and credentials were removed, and what it synced is still on this phone</string>
     <string name="status_detail_ok">All Collections synced</string>
     <string name="status_detail_partial">%1$d of %2$d Collections failed</string>
     <string name="status_detail_failed">All %1$d Collections failed</string>
@@ -139,8 +141,12 @@
     <string name="type_addressbook">address book</string>
     <string name="type_calendar">calendar</string>
     <string name="remove_account">Remove account</string>
+    <string name="configure_account">Configure</string>
+    <string name="title_configure_account">Configure account</string>
     <string name="remove_account_title">Remove %1$s?</string>
-    <string name="remove_account_message">The account, its stored credentials, its Collection selection and every contact and event it synced are removed from this phone. Nothing of it stays behind.</string>
+    <string name="remove_account_message">Its server address, its stored credentials and its Collection selection are cleared, and it stops syncing. The contacts and events it has already synced stay on this phone.</string>
+    <string name="remove_also_delete">Also delete the synced contacts and events</string>
+    <string name="account_disconnected">Account removed. What it synced is still on this phone.</string>
     <string name="remove">Remove</string>
     <string name="cancel">Cancel</string>
     <string name="ok">OK</string>

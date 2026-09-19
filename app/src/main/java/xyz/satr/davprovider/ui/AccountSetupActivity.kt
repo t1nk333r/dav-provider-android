@@ -45,6 +45,14 @@ import xyz.satr.davprovider.error.credentialsUnreadable
 import xyz.satr.davprovider.sync.SyncScheduler
 
 /**
+ * The label of an Account that already exists, to fill its configuration in again.
+ *
+ * A label rather than the whole record: the record is read from the store, and passing one through
+ * an Intent would be passing a copy that can disagree with it.
+ */
+internal const val EXTRA_RECONFIGURE: String = "xyz.satr.davprovider.reconfigure"
+
+/**
  * Creating one Account: its base URL, the headers and client certificate that authenticate it,
  * and an optional username and password.
  *
@@ -192,7 +200,12 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         )
         executor.execute {
             val labels = try {
-                UiDependencies.accountStore(this).list().map { it.label }.toSet()
+                // Configured accounts only: a disconnected one is a label the user can fill in
+                // again, and warning about it would make the honest case look like the dangerous one.
+                UiDependencies.accountStore(this).list()
+                    .filter { it.baseUrl.isNotEmpty() }
+                    .map { it.label }
+                    .toSet()
             } catch (e: Exception) {
                 // A record that cannot be read is not this screen's to report — the save says so
                 // when it gets there — and an empty set costs only the warning.
@@ -204,6 +217,16 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
                     updateLabelNote()
                 }
             }
+        }
+        // An Account that already exists, being configured again. The label is its identity and is
+        // not changed here, and treating it as stored is what makes the save an update rather than
+        // a registration — AccountStore.save, not AccountStore.create.
+        intent.getStringExtra(EXTRA_RECONFIGURE)?.let { existing ->
+            stored = true
+            labelInput.setText(existing)
+            findViewById<TextInputLayout>(R.id.label_input_box).isEnabled = false
+            updateLabelNote()
+            supportActionBar?.setTitle(R.string.title_configure_account)
         }
         restoreForm(savedInstanceState)
         // Never hide something already filled in: a rotation restores the header rows and the chosen

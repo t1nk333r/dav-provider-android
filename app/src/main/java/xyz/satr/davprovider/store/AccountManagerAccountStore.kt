@@ -6,6 +6,7 @@ import android.content.Context
 import xyz.satr.davprovider.core.ACCOUNT_TYPE
 import xyz.satr.davprovider.core.AccountExistsException
 import xyz.satr.davprovider.core.AccountStore
+import xyz.satr.davprovider.core.ClientCertificateStore
 import xyz.satr.davprovider.core.CredentialStore
 import xyz.satr.davprovider.core.CredentialsUnreadableException
 import xyz.satr.davprovider.core.DavAccount
@@ -37,6 +38,7 @@ internal object AccountSecrets {
 class AccountManagerAccountStore(
     context: Context,
     private val credentials: CredentialStore = KeystoreCredentialStore(context),
+    private val certificates: ClientCertificateStore = ClientCertificateStoreImpl(context),
 ) : AccountStore, CollectionSelectionWriter {
 
     private val accountManager: AccountManager = AccountManager.get(context.applicationContext)
@@ -83,11 +85,12 @@ class AccountManagerAccountStore(
      * rather than overwritten, and [save] is the way to say the update was meant.
      */
     override fun create(davAccount: DavAccount) {
-        // Only an Account the app can read is one worth refusing for. An account with no record —
-        // a save interrupted before its last step — holds nothing this form could overwrite, is
-        // not shown by the settings screen, and refusing for it would name an account the user
-        // cannot find. [save] adopts such an account, which is what registering it means.
-        if (list().any { it.label == davAccount.label }) {
+        // Only a configured Account is one worth refusing for. An account with no record — a save
+        // interrupted before its last step — holds nothing this form could overwrite, and the
+        // settings screen does not show it. A disconnected one does show, and filling it in is
+        // exactly what configuring it means: the rows it already holds stay where they are. Either
+        // refusal would name an account the user could not act on; [save] adopts both.
+        if (list().any { it.label == davAccount.label && it.baseUrl.isNotEmpty() }) {
             throw AccountExistsException(davAccount.label)
         }
         save(davAccount)
@@ -119,6 +122,34 @@ class AccountManagerAccountStore(
         writeSecrets(account, davAccount)
         writeRecord(account, davAccount)
         pruneSecrets(account, previous, davAccount)
+    }
+
+    /**
+     * Keeps the Account and its rows, and takes away what makes it a server.
+     *
+     * The Account stays registered, which is the reason this exists at all: the providers delete
+     * the rows of an account that is not in AccountManager (spec §7), so the only way to keep what
+     * was synced is to keep the account it belongs to. What goes is the address, the Credentials,
+     * the certificate and the Collection selection — everything a form could fill in again.
+     */
+    override fun disconnect(account: Account) {
+        val record = readRecord(account)
+            ?: throw IllegalStateException("No account record exists for ${account.name}")
+        // The identity first: once the record names no certificate, nothing left on the device says
+        // which account the stored archive belongs to.
+        certificates.remove(account)
+        // save() is total, so an empty address, no headers, no password and no Collections take
+        // away exactly what they say — and pruneSecrets drops the Credentials they named.
+        save(
+            record.copy(
+                baseUrl = "",
+                headers = emptyList(),
+                certificate = null,
+                username = null,
+                password = null,
+                collections = emptyList(),
+            ),
+        )
     }
 
     /**

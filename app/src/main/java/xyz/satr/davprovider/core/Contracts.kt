@@ -213,6 +213,17 @@ interface AccountStore {
     /** Rewrites an Account that is expected to exist. This is the update path. */
     fun save(davAccount: DavAccount)
 
+    /**
+     * Keeps the Account and everything its providers hold, and takes away what makes it a server:
+     * the address, the Credentials, the certificate and the Collection selection.
+     *
+     * The Account staying registered is the whole point of this method existing. The providers
+     * delete the rows of an account that is not in AccountManager (spec §7), so an account that
+     * goes takes its synced contacts and events with it. What is left is one the settings screen
+     * can show as disconnected and offer to configure again, with its data still on the device.
+     */
+    fun disconnect(account: Account)
+
     fun delete(account: Account)
 }
 

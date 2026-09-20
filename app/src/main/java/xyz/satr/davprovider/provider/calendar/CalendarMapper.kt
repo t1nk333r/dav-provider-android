@@ -2,6 +2,7 @@ package xyz.satr.davprovider.provider.calendar
 
 import android.accounts.Account
 import android.accounts.AccountManager
+import android.content.ContentProviderOperation
 import android.content.ContentResolver
 import android.content.ContentValues
 import android.content.Context
@@ -153,6 +154,11 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
         // otherwise be fifty provider round trips to ask questions this Collection already answers,
         // and every one of them runs on the sync thread.
         val claimed = rowsClaiming(account, calendarId, resources.keys)
+        // One batch for the whole upsert, committed once: the provider applies the operations in the
+        // order they were appended, so a master still precedes the overrides that link to it by
+        // ORIGINAL_SYNC_ID, and a batch of fifty resources stops being hundreds of transactions and
+        // hundreds of provider notifications.
+        val batch = ArrayList<ContentProviderOperation>()
         var rows = 0
         for ((name, body) in resources) {
             val resource = try {
@@ -163,8 +169,14 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
                 continue
             }
             val existing = claimed[name].orEmpty()
-            rows += ResourceWriter(account, calendarId, name, resource, etags[name], existing).write()
+            rows += ResourceWriter(account, calendarId, name, resource, etags[name], existing).write(batch)
         }
+        // Failure is now the batch's, not one resource's: the provider applies it in one transaction,
+        // so an operation it refuses leaves no row of this batch behind, and the exception reaches the
+        // engine's per-Collection catch, which records the failure and offers the Collection again on
+        // the next run. Skipping the one resource that failed is what the contacts mapper gave up for
+        // this too.
+        if (batch.isNotEmpty()) resolver.applyBatch(authority, batch)
         return rows
     }
 
@@ -312,7 +324,7 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
 
     // ---------------------------------------------------------------- writes
 
-    /** Writes one resource: its master row first, then its overrides. */
+    /** Appends one resource's operations to a batch: its master first, then its overrides. */
     private inner class ResourceWriter(
         private val account: Account,
         private val calendarId: Long,
@@ -325,7 +337,14 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
         private val nowMillis = System.currentTimeMillis()
         private val fallbackZone: ZoneId = ZoneId.systemDefault()
 
-        fun write(): Int {
+        /**
+         * Appends this resource's operations to [batch] and returns how many event rows it writes.
+         *
+         * The master is appended first on purpose: the provider links an override to it by looking
+         * up ORIGINAL_SYNC_ID = this row's _SYNC_ID, and backfills ORIGINAL_ID for exceptions that
+         * were already stored. An override written first stays unlinked.
+         */
+        fun write(batch: MutableList<ContentProviderOperation>): Int {
             if (resource.droppedUids.isNotEmpty()) {
                 Log.w(TAG, "$name holds more than one UID; not written: ${resource.droppedUids.size} extra group(s)")
             }
@@ -340,7 +359,6 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
                 Log.w(TAG, "$name: ${resource.master.unrepresentableDates} RDATE/EXDATE entry(ies) had no storable form")
             }
 
-            val kept = HashSet<Long>()
             var written = 0
 
             val master = resource.master
@@ -348,51 +366,57 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
                 Log.w(TAG, "Skipping $name: its master has no usable start time")
                 return 0
             }
-            // The master is written first on purpose: the provider links an override to it by
-            // looking up ORIGINAL_SYNC_ID = this row's _SYNC_ID, and backfills ORIGINAL_ID for
-            // exceptions that were already stored. An override written first stays unlinked.
-            val reusedMaster = existing.firstOrNull { it.syncId == name }
-            val masterId = if (reusedMaster != null) {
-                updateRow(reusedMaster.id, eventValues(master, masterTimes))
-                reusedMaster.id
-            } else {
-                insertRow(eventValues(master, masterTimes)) ?: run {
-                    Log.w(TAG, "Could not write the master row of $name")
-                    return 0
-                }
-            }
-            reusedMaster?.let { kept.add(it.id) }
-            written++
-            writeRelated(masterId, master, masterTimes)
-
+            // Every exception that can be placed in time, in the resource's own order. Which row each
+            // of them continues is decided below, over the rows this batch read for the resource.
+            val overrides = ArrayList<Pair<ParsedEvent, EventTimes>>()
             for (override in resource.overrides) {
                 val times = timesOf(override) ?: run {
                     Log.w(TAG, "Skipping one exception of $name: unusable start time")
                     continue
                 }
-                val values = eventValues(override, times)
-                val instanceTime = times.originalInstanceTime
-                val match = existing.firstOrNull {
-                    it.id !in kept &&
-                        it.originalSyncId == name &&
-                        it.originalInstanceTime == instanceTime &&
-                        it.originalAllDay == (times.originalAllDay == true)
-                }
-                val rowId = if (match != null) {
-                    updateRow(match.id, values)
-                    kept.add(match.id)
-                    match.id
+                overrides += override to times
+            }
+            val plan = rowPlan(
+                existing = existing,
+                name = name,
+                occurrences = overrides.map { (_, times) ->
+                    Occurrence(instanceTime = times.originalInstanceTime, allDay = times.originalAllDay == true)
+                },
+            )
+
+            val masterRef: RowRef
+            if (plan.masterId != null) {
+                batch += eventUpdate(plan.masterId, eventValues(master, masterTimes))
+                masterRef = RowRef.existing(plan.masterId)
+            } else {
+                val at = batch.size
+                batch += eventInsert(eventValues(master, masterTimes))
+                masterRef = RowRef.pending(at)
+            }
+            written++
+            writeRelated(batch, masterRef, master, masterTimes)
+
+            for ((at, component) in overrides.withIndex()) {
+                val (event, times) = component
+                val values = eventValues(event, times)
+                val rowId = plan.overrideIds[at]
+                val ref: RowRef
+                if (rowId != null) {
+                    batch += eventUpdate(rowId, values)
+                    ref = RowRef.existing(rowId)
                 } else {
-                    insertRow(values) ?: continue
+                    val index = batch.size
+                    batch += eventInsert(values)
+                    ref = RowRef.pending(index)
                 }
                 written++
-                writeRelated(rowId, override, times)
+                writeRelated(batch, ref, event, times)
             }
 
             // Anything else claiming this resource — a duplicated master, an exception the server
             // has since dropped — is gone. `_SYNC_ID` has no unique index, so this is the only
             // thing keeping the resource name unique per calendar.
-            deleteIds(account, existing.filter { it.id !in kept }.map { it.id })
+            appendDeletes(batch, account, plan.doomed)
             return written
         }
 
@@ -466,38 +490,54 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
             }
         }
 
-        private fun writeRelated(eventId: Long, event: ParsedEvent, times: EventTimes) {
-            // Re-applied rather than merged: the server's attendee list and alarms are the state.
-            resolver.delete(
-                decorated(Reminders.CONTENT_URI, account),
-                "${Reminders.EVENT_ID}=?",
-                arrayOf(eventId.toString()),
-            )
-            resolver.delete(
-                decorated(Attendees.CONTENT_URI, account),
-                "${Attendees.EVENT_ID}=?",
-                arrayOf(eventId.toString()),
-            )
+        /**
+         * Re-applied rather than merged: the server's attendee list and alarms are the state.
+         *
+         * The deletes are for a row that already exists: they clear both lists by id. A row this
+         * batch creates has nothing under it yet and no id for a selection to name, so its lists are
+         * only written — every insert names its event through [withRowRef], which is a row id for a
+         * row that exists and a back reference to the insert of one that does not.
+         */
+        private fun writeRelated(
+            batch: MutableList<ContentProviderOperation>,
+            eventRef: RowRef,
+            event: ParsedEvent,
+            times: EventTimes,
+        ) {
+            val remindersUri = decorated(Reminders.CONTENT_URI, account)
+            val attendeesUri = decorated(Attendees.CONTENT_URI, account)
+            eventRef.id?.let { eventId ->
+                batch += ContentProviderOperation.newDelete(remindersUri)
+                    .withSelection("${Reminders.EVENT_ID}=?", arrayOf(eventId.toString()))
+                    .build()
+                batch += ContentProviderOperation.newDelete(attendeesUri)
+                    .withSelection("${Attendees.EVENT_ID}=?", arrayOf(eventId.toString()))
+                    .build()
+            }
             val durationSeconds = (times.end - times.dtStart) / 1000L
             for (reminder in event.reminders) {
                 val minutes = reminderMinutes(reminder, times, durationSeconds) ?: continue
                 val values = ContentValues().apply {
-                    put(Reminders.EVENT_ID, eventId)
                     put(Reminders.MINUTES, minutes)
                     put(Reminders.METHOD, if (reminder.method == AlarmMethod.EMAIL) Reminders.METHOD_EMAIL else Reminders.METHOD_ALERT)
                 }
-                resolver.insert(decorated(Reminders.CONTENT_URI, account), values)
+                batch += ContentProviderOperation.newInsert(remindersUri)
+                    .withValues(values)
+                    .withRowRef(Reminders.EVENT_ID, eventRef)
+                    .build()
             }
             for (attendee in event.attendees) {
                 val values = ContentValues().apply {
-                    put(Attendees.EVENT_ID, eventId)
                     put(Attendees.ATTENDEE_EMAIL, attendee.email)
                     put(Attendees.ATTENDEE_NAME, attendee.name)
                     put(Attendees.ATTENDEE_RELATIONSHIP, Attendees.RELATIONSHIP_ATTENDEE)
                     put(Attendees.ATTENDEE_TYPE, attendeeType(attendee))
                     put(Attendees.ATTENDEE_STATUS, attendeeStatus(attendee.partstat))
                 }
-                resolver.insert(decorated(Attendees.CONTENT_URI, account), values)
+                batch += ContentProviderOperation.newInsert(attendeesUri)
+                    .withValues(values)
+                    .withRowRef(Attendees.EVENT_ID, eventRef)
+                    .build()
             }
         }
 
@@ -520,11 +560,36 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
             return raw.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
         }
 
-        private fun insertRow(values: ContentValues): Long? =
-            resolver.insert(eventsUri(account), values)?.lastPathSegment?.toLongOrNull()
+        private fun eventInsert(values: ContentValues): ContentProviderOperation =
+            ContentProviderOperation.newInsert(eventsUri(account)).withValues(values).build()
 
-        private fun updateRow(id: Long, values: ContentValues) {
-            resolver.update(eventsUri(account), values, "${Events._ID}=?", arrayOf(id.toString()))
+        private fun eventUpdate(id: Long, values: ContentValues): ContentProviderOperation =
+            ContentProviderOperation.newUpdate(eventsUri(account))
+                .withSelection("${Events._ID}=?", arrayOf(id.toString()))
+                .withValues(values)
+                .build()
+    }
+
+    /**
+     * The value for [column]: a row id, or a reference to the result of an earlier operation in the
+     * same batch — the only way to write a child of a row the batch has not created yet.
+     */
+    private fun ContentProviderOperation.Builder.withRowRef(column: String, ref: RowRef): ContentProviderOperation.Builder {
+        val id = ref.id
+        if (id != null) return withValue(column, id)
+        val index = ref.batchIndex
+        checkNotNull(index) { "row reference has neither an id nor a batch index" }
+        return withValueBackReference(column, index)
+    }
+
+    /**
+     * A row the batch is about to create, or one that already exists — exactly one of the two,
+     * because which of them it is decides whether a value is a row id or a back reference.
+     */
+    private class RowRef private constructor(val id: Long?, val batchIndex: Int?) {
+        companion object {
+            fun existing(id: Long): RowRef = RowRef(id, null)
+            fun pending(batchIndex: Int): RowRef = RowRef(null, batchIndex)
         }
     }
 
@@ -536,6 +601,13 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
         val originalAllDay: Boolean,
     )
 
+    /**
+     * Deletes rows by id as its own transaction.
+     *
+     * Only [deleteMissing] reaches this: it runs outside any batch and has to remove what the server
+     * no longer lists. The write path appends the same deletes with [appendDeletes] instead, so a
+     * resource's row and the rows it no longer claims go in one commit.
+     */
     private fun deleteIds(account: Account, ids: List<Long>): Int {
         if (ids.isEmpty()) return 0
         var deleted = 0
@@ -545,6 +617,17 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
             deleted += resolver.delete(eventsUri(account), "${Events._ID} IN ($placeholders)", args)
         }
         return deleted
+    }
+
+    /** The deletes of [deleteIds], appended to a batch instead of run. */
+    private fun appendDeletes(batch: MutableList<ContentProviderOperation>, account: Account, ids: List<Long>) {
+        for (chunk in ids.chunked(ID_CHUNK)) {
+            val placeholders = chunk.joinToString(",") { "?" }
+            val args = chunk.map { it.toString() }.toTypedArray()
+            batch += ContentProviderOperation.newDelete(eventsUri(account))
+                .withSelection("${Events._ID} IN ($placeholders)", args)
+                .build()
+        }
     }
 
     // ---------------------------------------------------------------- URIs
@@ -625,4 +708,52 @@ internal fun rowsByClaim(
         row.originalSyncId?.takeIf { it in names }?.let { claimed.getOrPut(it) { ArrayList() }.add(row) }
     }
     return claimed.mapValues { (_, claiming) -> claiming.sortedBy { it.id } }
+}
+
+/** An exception's identity as the provider stores it: the occurrence it replaces. */
+internal data class Occurrence(val instanceTime: Long?, val allDay: Boolean)
+
+/**
+ * Which existing row each component of one resource continues, and which rows nothing claims.
+ *
+ * Read-only over rows a query already returned, because the rules it holds are the ones that decide
+ * whether a resource keeps its rows or is written again from scratch — and the only ones in the
+ * write path that can be answered without a provider.
+ *
+ * The master is the first row carrying the resource's `_SYNC_ID`. `_SYNC_ID` has no unique index, so
+ * a row can claim the same resource twice; everything past the first is doomed rather than written
+ * over twice. An exception matches on three things together — the resource, the occurrence it
+ * replaces, and that occurrence's all-day flag — because `ORIGINAL_SYNC_ID` alone is shared by every
+ * exception of the resource and by nothing else. A row one component has claimed is never claimed
+ * again, which is what keeps a reused row out of [doomed].
+ */
+internal data class RowPlan(
+    /** The row the master continues, or null when the master has to be inserted. */
+    val masterId: Long?,
+    /** One entry per exception, in order: the row it continues, or null when it has to be inserted. */
+    val overrideIds: List<Long?>,
+    /** The rows claiming the resource that no component continues; they are deleted. */
+    val doomed: List<Long>,
+)
+
+internal fun rowPlan(
+    existing: List<CalendarMapper.ExistingRow>,
+    name: String,
+    occurrences: List<Occurrence>,
+): RowPlan {
+    val claimed = HashSet<Long>()
+    val masterId = existing.firstOrNull { it.syncId == name }?.also { claimed.add(it.id) }?.id
+    val overrideIds = occurrences.map { occurrence ->
+        existing.firstOrNull {
+            it.id !in claimed &&
+                it.originalSyncId == name &&
+                it.originalInstanceTime == occurrence.instanceTime &&
+                it.originalAllDay == occurrence.allDay
+        }?.also { claimed.add(it.id) }?.id
+    }
+    return RowPlan(
+        masterId = masterId,
+        overrideIds = overrideIds,
+        doomed = existing.filter { it.id !in claimed }.map { it.id },
+    )
 }

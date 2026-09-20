@@ -135,12 +135,19 @@ class ContactsMapper(
         val rawContactsUri = RawContacts.CONTENT_URI.forSyncAdapter(account)
         val groupsUri = Groups.CONTENT_URI.forSyncAdapter(account)
 
+        // The rows this Collection already holds, for every name this batch asks about, read once for
+        // the batch: the write path asks "which row is this href?" once per resource and "which row is
+        // this UID or title?" once per membership end, so a run in which only contacts changed used to
+        // pay an indexed query for each of those answers. The names are the batch's own, so this reads
+        // what those questions can have an answer for and nothing else.
+        val known = knownRows(account, collection, contacts, groups)
+
         // Pass 1: contacts, with their ETags, in the rows that carry them. Nothing else in the batch
         // may point at a contact that does not exist yet.
         val writtenContacts = ArrayList<Pair<Resource, RowRef>>()
         val contactsByUid = HashMap<String, RowRef>()
         for (resource in contacts) {
-            val ref = appendContact(account, collection, resource, etags[resource.key], dataUri, rawContactsUri, batch, stats)
+            val ref = appendContact(account, collection, resource, etags[resource.key], dataUri, rawContactsUri, batch, stats, known)
             writtenContacts += resource to ref
             resource.parsed.uid?.let { contactsByUid[it] = ref }
         }
@@ -149,7 +156,7 @@ class ContactsMapper(
         val writtenGroups = ArrayList<Pair<Resource, RowRef>>()
         val groupsByTitle = HashMap<String, RowRef>()
         for (resource in groups) {
-            val ref = appendGroup(account, collection, resource, etags[resource.key], dataUri, groupsUri, batch)
+            val ref = appendGroup(account, collection, resource, etags[resource.key], dataUri, groupsUri, batch, known)
             writtenGroups += resource to ref
             resource.parsed.displayName?.let { groupsByTitle[it.lowercase(Locale.ROOT)] = ref }
         }
@@ -160,7 +167,7 @@ class ContactsMapper(
         for ((resource, ref) in writtenContacts) {
             for (category in resource.parsed.categories) {
                 val group = groupsByTitle[category.lowercase(Locale.ROOT)]
-                    ?: groupIdByTitle(account, collection, category)?.let { RowRef.existing(it) }
+                    ?: known.groupIdsByTitle[category]?.let { RowRef.existing(it) }
                 if (group == null) {
                     unresolved += DeferredMembership(MEMBERSHIP_FROM_CATEGORIES, contact = ref, groupTitle = category)
                     continue
@@ -173,7 +180,7 @@ class ContactsMapper(
         for ((resource, group) in writtenGroups) {
             for (uid in resource.parsed.members) {
                 val contact = contactsByUid[uid]
-                    ?: rawContactIdByUid(account, collection, uid)?.let { RowRef.existing(it) }
+                    ?: known.contactIdsByUid[uid]?.let { RowRef.existing(it) }
                 if (contact == null) {
                     unresolved += DeferredMembership(MEMBERSHIP_FROM_GROUP, contactUid = uid, group = group)
                     continue
@@ -199,14 +206,15 @@ class ContactsMapper(
         val results = resolver.applyBatch(authority, batch)
 
         // Pass 3: memberships whose other end this batch never named. Both ends can arrive in any
-        // order across batches, and only now is everything this run wrote visible; whatever still
-        // cannot be resolved is counted and logged rather than failing the batch around it.
+        // order across batches, and a batch sees everything the run wrote before it: whatever is not
+        // in [known] either does not exist, in which case the next run resolves it once it does, or is
+        // counted as unresolved and logged rather than failing the batch around it.
         val reconciliation = ArrayList<ContentProviderOperation>()
         for (membership in unresolved) {
             val contactId = membership.contact?.let { resolveId(it, results) }
-                ?: membership.contactUid?.let { rawContactIdByUid(account, collection, it) }
+                ?: membership.contactUid?.let { known.contactIdsByUid[it] }
             val groupId = membership.group?.let { resolveId(it, results) }
-                ?: membership.groupTitle?.let { groupIdByTitle(account, collection, it) }
+                ?: membership.groupTitle?.let { known.groupIdsByTitle[it] }
             if (contactId == null || groupId == null) {
                 stats.unresolvedMemberships++
                 continue
@@ -313,6 +321,7 @@ class ContactsMapper(
         rawContactsUri: Uri,
         batch: MutableList<ContentProviderOperation>,
         stats: UpsertStats,
+        known: KnownRows,
     ): RowRef {
         val sync = ContentValues().apply {
             put(RawContacts.SOURCE_ID, resource.key)
@@ -323,7 +332,7 @@ class ContactsMapper(
             put(RawContacts.DIRTY, 0)
         }
 
-        val existing = rawContactId(account, collection, resource.key)
+        val existing = known.contactIdsBySourceId[resource.key]
         val ref: RowRef
         if (existing == null) {
             val index = batch.size
@@ -376,6 +385,7 @@ class ContactsMapper(
         dataUri: Uri,
         groupsUri: Uri,
         batch: MutableList<ContentProviderOperation>,
+        known: KnownRows,
     ): RowRef {
         val sync = ContentValues().apply {
             put(Groups.SOURCE_ID, resource.key)
@@ -385,7 +395,7 @@ class ContactsMapper(
             put(Groups.DIRTY, 0)
         }
 
-        val existing = groupId(account, collection, resource.key)
+        val existing = known.groupIdsBySourceId[resource.key]
         return if (existing == null) {
             val index = batch.size
             batch += ContentProviderOperation.newInsert(groupsUri)
@@ -526,35 +536,98 @@ class ContactsMapper(
 
     // ------------------------------------------------------------------ lookups
 
-    private fun rawContactId(account: Account, collection: DavCollection, key: String): Long? =
-        queryId(
-            RawContacts.CONTENT_URI.forSyncAdapter(account),
-            "${contactSelection()} AND ${RawContacts.SOURCE_ID}=?",
-            collectionArgs(account, collection) + key,
+    /**
+     * The rows of this Collection that the names in one batch can mean.
+     *
+     * Read once for the batch, before any of it is built — which is what makes it correct as well as
+     * cheap. Rows an earlier batch of this run wrote are committed and therefore visible; rows this
+     * batch writes are not, and those are the batch's own maps and [RowRef.pending], both of which are
+     * consulted first. A direction this batch does not name costs no read at all.
+     */
+    private fun knownRows(
+        account: Account,
+        collection: DavCollection,
+        contacts: List<Resource>,
+        groups: List<Resource>,
+    ): KnownRows {
+        val rawContactsUri = RawContacts.CONTENT_URI.forSyncAdapter(account)
+        val groupsUri = Groups.CONTENT_URI.forSyncAdapter(account)
+        val scope = collectionArgs(account, collection)
+        return KnownRows(
+            contactIdsBySourceId = idsByName(
+                rawContactsUri,
+                RawContacts.SOURCE_ID,
+                contactSelection(),
+                scope,
+                contacts.map { it.key },
+            ),
+            // A group's MEMBER names a contact by its vCard UID, which this class stores in SYNC1.
+            contactIdsByUid = idsByName(
+                rawContactsUri,
+                RawContacts.SYNC1,
+                contactSelection(),
+                scope,
+                groups.flatMap { it.parsed.members }.distinct(),
+            ),
+            groupIdsBySourceId = idsByName(
+                groupsUri,
+                Groups.SOURCE_ID,
+                groupSelection(),
+                scope,
+                groups.map { it.key },
+            ),
+            // Groups are named by their title, which is all a `CATEGORIES` value has to go on.
+            groupIdsByTitle = idsByName(
+                groupsUri,
+                Groups.TITLE,
+                groupSelection(),
+                scope,
+                contacts.flatMap { it.parsed.categories }.distinct(),
+            ),
         )
+    }
 
-    /** The contact a group's `MEMBER` reference means: the same Collection, the same vCard UID. */
-    private fun rawContactIdByUid(account: Account, collection: DavCollection, uid: String): Long? =
-        queryId(
-            RawContacts.CONTENT_URI.forSyncAdapter(account),
-            "${contactSelection()} AND ${RawContacts.SYNC1}=?",
-            collectionArgs(account, collection) + uid,
-        )
+    /**
+     * The id of every row carrying one of [names] in [column], within [scope].
+     *
+     * Chunked like [deleteRows], and for the same reason: an `IN` list is bounded by the variables one
+     * statement may bind, and a group vCard may name thousands of members. [scopeArgs] spends three of
+     * those, which one chunk of [SQL_VARIABLES_PER_STATEMENT] leaves room for.
+     *
+     * The first row wins, which is what the per-resource query returned as well.
+     */
+    private fun idsByName(
+        uri: Uri,
+        column: String,
+        scope: String,
+        scopeArgs: Array<String>,
+        names: List<String>,
+    ): Map<String, Long> {
+        if (names.isEmpty()) return emptyMap()
+        val ids = HashMap<String, Long>()
+        for (chunk in names.chunked(SQL_VARIABLES_PER_STATEMENT)) {
+            val placeholders = chunk.joinToString(",") { "?" }
+            resolver.query(uri, arrayOf(BaseColumns._ID, column), "$scope AND $column IN ($placeholders)", scopeArgs + chunk, null)
+                ?.use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val name = cursor.getString(1) ?: continue
+                        ids.putIfAbsent(name, cursor.getLong(0))
+                    }
+                }
+        }
+        return ids
+    }
 
-    private fun groupId(account: Account, collection: DavCollection, key: String): Long? =
-        queryId(
-            Groups.CONTENT_URI.forSyncAdapter(account),
-            "${groupSelection()} AND ${Groups.SOURCE_ID}=?",
-            collectionArgs(account, collection) + key,
-        )
-
-    /** Groups are named by their title, which is all a `CATEGORIES` value has to go on. */
-    private fun groupIdByTitle(account: Account, collection: DavCollection, title: String): Long? =
-        queryId(
-            Groups.CONTENT_URI.forSyncAdapter(account),
-            "${groupSelection()} AND ${Groups.TITLE}=?",
-            collectionArgs(account, collection) + title,
-        )
+    /**
+     * The rows one batch may point at, read for the batch as a whole. A name that is absent is not an
+     * error: no such row is there yet, which is what [RowRef.pending] exists for.
+     */
+    private class KnownRows(
+        val contactIdsBySourceId: Map<String, Long>,
+        val contactIdsByUid: Map<String, Long>,
+        val groupIdsBySourceId: Map<String, Long>,
+        val groupIdsByTitle: Map<String, Long>,
+    )
 
     private fun queryId(uri: Uri, selection: String, args: Array<String>): Long? =
         resolver.query(uri, arrayOf(BaseColumns._ID), selection, args, null)?.use { cursor ->

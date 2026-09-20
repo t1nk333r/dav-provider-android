@@ -483,7 +483,13 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
                 put(Events.RRULE, rrule)
                 put(Events.RDATE, rdate)
                 put(Events.EXDATE, exdate)
-                put(Events.STATUS, event.status?.let { statusValue(it) })
+                // Omitted, not written as null, when the VEVENT carries no STATUS. A key that is
+                // present with a null value is what CalendarProvider2's update path unboxes when it
+                // asks whether the status changed, and that unboxing is an NPE inside the provider
+                // which fails the whole write — no event without a STATUS could ever be updated,
+                // only inserted. An absent STATUS and a null one say the same thing about the
+                // event, so leaving the column alone is the honest spelling of it.
+                event.status?.let { put(Events.STATUS, statusValue(it)) }
                 put(Events.AVAILABILITY, availabilityValue(event.transparency))
                 // Read-only: the row is server state, never a local edit.
                 put(Events.DIRTY, 0)

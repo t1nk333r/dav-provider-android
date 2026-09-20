@@ -37,18 +37,27 @@ internal fun defaultSyncEngineProvider(
         else -> error("no sync components serve the authority $authority")
     }
 
+    // Named once each because §8's walk has to make its requests the way the run would: same client
+    // configuration, same §5 classifier, and the same store — the walk writes the Account's selection
+    // through the part of it that carries no Credentials, and a second instance of the store would be
+    // a second view of the userdata both of them read.
+    val factory = DavHttpClientFactoryImpl(appContext)
+    val classifier = SyncErrorClassifierImpl()
+    val store = AccountManagerAccountStore(appContext)
+
     SyncEngine(
         mapper = when (collectionType) {
             CollectionType.ADDRESS_BOOK -> ContactsMapper(appContext)
             CollectionType.CALENDAR -> CalendarMapper(appContext)
         },
         collectionType = collectionType,
-        accountStore = AccountManagerAccountStore(appContext),
-        httpClientFactory = DavHttpClientFactoryImpl(appContext),
-        classifier = SyncErrorClassifierImpl(),
+        accountStore = store,
+        httpClientFactory = factory,
+        classifier = classifier,
         reporter = reporter,
         preferences = SyncPreferences(appContext),
         deferrals = SyncStatusStore(appContext),
+        enumerator = DailyEnumeration(appContext, factory, classifier, store),
         metering = ConnectivityManagerMetering(appContext),
     )
 }

@@ -62,6 +62,12 @@ private val ACCOUNT_ABORTING_CLASSES = setOf(
  * A run begins with §8's pre-flight rather than with the first Collection: [extras] says whether the
  * user asked for this run, and the answer decides whether the Account's own unmetered-only setting
  * and its empty selection apply to it at all.
+ *
+ * §8's re-enumeration comes next and before the run's own client is built: manual plus daily, so a
+ * Collection the server has gained is one the Account can be offered without anyone pressing
+ * anything. It is a step of the run rather than of a Collection — one walk per Account per day,
+ * shared by both authorities' engines — and it is the one step here whose failure is not the run's:
+ * the Collections already stored are what this run is for.
  */
 class SyncEngine(
     private val mapper: ProviderMapper,
@@ -72,6 +78,7 @@ class SyncEngine(
     private val reporter: SyncReporter,
     private val preferences: SyncPreferences,
     private val deferrals: SyncDeferralRecorder,
+    private val enumerator: CollectionEnumerator,
     metering: NetworkMetering,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
@@ -100,7 +107,7 @@ class SyncEngine(
             return
         }
 
-        val davAccount = try {
+        var davAccount = try {
             accountStore.load(account)
         } catch (e: CredentialsUnreadableException) {
             // The Account survived a device restore; its Credentials did not. §5 class 5.
@@ -141,6 +148,39 @@ class SyncEngine(
                 result.delayUntil = decision.untilSeconds
                 deferrals.recordDeferred(account)
                 return
+            }
+        }
+
+        // §8's daily half of re-enumeration, before this run's own client is built: discovery makes
+        // its own clients, so there is nothing open here to spend, and what it stores is the
+        // selection the Collection loop below works from.
+        //
+        // The day gates every run that reaches here, and `manual` is deliberately not an arm of it.
+        // §8's manual half of re-enumeration is the settings screen's Check collections — a gesture
+        // that asks for the walk — where this is a gesture that asks for a sync; one of those
+        // reaches both authorities, so honouring it here would spend the day's walk twice on a
+        // request that did not make it. The cadence is one walk per Account per day, which is only
+        // true if the settings screen's walk spends the same day (see `SettingsActivity`).
+        if (EnumerationDue.decide(preferences.lastEnumeratedAt(account), clock())) {
+            val walked = try {
+                enumerator.enumerate(account, davAccount)
+            } catch (e: Exception) {
+                // §8's rule for this step, enforced here rather than left to the walk: the Collections
+                // already stored are what the run is for, so a walk that cannot be made — or whose
+                // result cannot be stored — leaves this run to do exactly what it would have done had
+                // the day not been up. Nothing below reads this, no counter moves, and no error is
+                // recorded: the walk reports itself through the log, and the next run tries again.
+                null
+            }
+            if (walked != null) {
+                // Stamped only now, after a walk that ran to the end and was stored: one that failed
+                // is retried by the next run instead of being suppressed for a day.
+                preferences.setLastEnumeratedAt(account, clock())
+                // And the run continues from the selection the walk left rather than the one it
+                // loaded. A Collection the walk has just marked unavailable is one the server no
+                // longer lists, and syncing it would report the server's own answer — a 404 on a
+                // calendar that is gone — as this run's failure.
+                davAccount = davAccount.copy(collections = walked)
             }
         }
 

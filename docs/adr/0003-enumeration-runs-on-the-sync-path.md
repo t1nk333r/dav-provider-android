@@ -1,0 +1,17 @@
+# Enumeration runs on the sync path, once an Account per day
+
+§8 promised re-enumeration "manual plus daily" and only ever had the manual half: `CollectionDiscovery` was reached from the settings screen and from nowhere else, so a Collection added on the server stayed invisible until someone opened the app and pressed Check collections. The daily half is now a step of a run — the same walk, the same merge, the same store write, reached by the clock instead of by a button.
+
+The cadence is **one walk per Account per day**, and the day is stored per **Account** rather than per authority, because the contacts and calendar engines run as separate runs against one Account and a per-authority stamp would spend two walks a day for one server's list.
+
+**A manual sync is not an arm of that gate.** §8's "a manual sync bypasses every constraint" is about being allowed to sync now — the interval, the unmetered-only rule, the deferral — and the manual half of *enumeration* is a gesture that asks for the walk (Check collections), not one that asks for a sync. One `syncNow` reaches both authorities, so the other reading costs two walks on a request that did not make it. The settings screen's own walk therefore stamps the same day: it is a walk, and the day is what keeps the sequence from being repeated on it.
+
+## Consequences
+
+- **A new Collection is not discovered by Sync now.** The user's own path to it is Check collections, which is on the card beside the button; the run's path is the day. Nothing starts syncing that was not chosen either way, because a discovered Collection arrives unselected.
+- **A walk that fails is retried by the next run, not suppressed for a day.** The stamp is written only by a walk that ran to the end and whose result the store accepted — the two failures that return before the merge leave the day unspent.
+- **A failing walk never fails the run.** The Collections already stored are what the run is for; discovery cannot reach the server is not a reason to skip syncing what is already known. Nothing about the walk moves a counter or records an error, and it reports itself through the log it already appends.
+- **The walk reschedules only when the Account's syncable set moved.** Applying a selection reschedules every authority — `removePeriodicSync` then `addPeriodicSync` — and rescheduling an authority cancels the run being made for it, which the Collection loop stops on at its first check and reports as a run with nothing to do. A day the server's list has not moved is the ordinary day, and on it there is nothing to apply, so the run keeps the sync it was woken for. On a day it has moved, that run is cut short by its own reschedule and the next one syncs what this one selected: the cost of a changed server list, paid once and in the direction of doing less rather than more.
+- **The run continues from the selection the walk left**, not the one it loaded: a stored Collection the server has stopped listing is marked unavailable by the merge, and syncing it would report the server's own 404 as this run's failure.
+- **An Account with nothing selected never enumerates.** The preflight's `NothingToDo` returns before the gate, and `SyncScheduler` disables such an Account anyway — a fresh Account is seeded by the setup screen's walk, which is where its first Collections come from.
+- The day is a duration, not a calendar day: a run at 03:00 and one at 23:00 are not a day apart, because what the walk waits for is the server's list going stale rather than midnight.

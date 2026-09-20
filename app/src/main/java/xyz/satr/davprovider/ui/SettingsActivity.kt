@@ -562,6 +562,12 @@ class SettingsActivity : AppCompatActivity() {
             // A Collection discovered here arrives unselected, so this usually keeps a selection's
             // schedule as it was; an Account that had none is left unscheduled until one is chosen.
             SyncScheduler.applySelection(this, screen.account, merged)
+            // §8's cadence is one walk of an Account per day, and this is a walk: unstamped, the
+            // run that follows would spend a second one on the same day the user has just asked.
+            // Stamped only here, where the walk ran to the end and its result was stored — the two
+            // returns above are the walks that must not spend the day, because a later run is what
+            // retries them.
+            SyncPreferences(this).setLastEnumeratedAt(screen.account, System.currentTimeMillis())
             val added = merged.size - screen.davAccount.collections.size
             main.post {
                 if (!isActive()) return@post

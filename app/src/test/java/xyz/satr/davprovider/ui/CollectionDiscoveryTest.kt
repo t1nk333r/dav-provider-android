@@ -549,6 +549,68 @@ class CollectionDiscoveryTest {
         (displayName?.let { "<d:displayname>$it</d:displayname>" } ?: "") +
         (color?.let { "<$colorName>$it</$colorName>" } ?: "")
 
+    // ------------------------------------------------------------------ merge
+
+    @Test
+    fun `a stored Collection the walk did not list is retired`() {
+        // The ordinary case, and the reason the flag below has to exist: a Collection that really
+        // has gone from the server stops being synced rather than failing every run.
+        val stored = collection(id = "dav-gone", selected = true)
+
+        val merged = CollectionDiscovery.merge(listOf(stored), emptyList())
+
+        assertFalse(merged.single().available)
+        assertTrue("retiring must not deselect: the choice was the user's", merged.single().selected)
+    }
+
+    @Test
+    fun `a pinned Collection survives a walk that cannot see it`() {
+        // A Collection named by URL is in no home set, so no walk will ever list it. Retiring it
+        // on that evidence takes the only Collection some Accounts have out of the sync — and,
+        // since the daily enumeration runs unattended, it does so with nobody watching.
+        val pinned = collection(id = "dav-pasted", selected = true).copy(pinned = true)
+
+        val merged = CollectionDiscovery.merge(listOf(pinned), emptyList())
+
+        assertTrue(merged.single().available)
+        assertTrue(merged.single().selected)
+    }
+
+    @Test
+    fun `a walk that does list a pinned Collection refreshes it and keeps the pin`() {
+        val pinned = collection(id = "dav-pasted", selected = true).copy(pinned = true)
+        val asListed = collection(id = "dav-pasted", displayName = "Renamed on the server")
+
+        val merged = CollectionDiscovery.merge(listOf(pinned), listOf(asListed))
+
+        assertEquals("Renamed on the server", merged.single().displayName)
+        assertTrue("the pin is the user's provenance, not the walk's", merged.single().pinned)
+        assertTrue(merged.single().selected)
+    }
+
+    @Test
+    fun `a newly discovered Collection arrives unselected and unpinned`() {
+        val discovered = collection(id = "dav-new", selected = true)
+
+        val merged = CollectionDiscovery.merge(emptyList(), listOf(discovered))
+
+        assertFalse(merged.single().selected)
+        assertFalse(merged.single().pinned)
+    }
+
+    private fun collection(
+        id: String,
+        selected: Boolean = false,
+        displayName: String? = null,
+    ) = DavCollection(
+        id = id,
+        url = "https://dav.example/books/$id/",
+        type = CollectionType.ADDRESS_BOOK,
+        displayName = displayName,
+        color = null,
+        selected = selected,
+    )
+
     private fun principalProperty(href: String = "/dav/user/"): String =
         "<d:current-user-principal><d:href>$href</d:href></d:current-user-principal>"
 

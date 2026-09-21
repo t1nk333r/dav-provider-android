@@ -377,12 +377,19 @@ internal object CollectionDiscovery {
      * observation. A newly discovered Collection arrives **unselected**, so a calendar that appeared
      * on the server does not silently start writing into the phone.
      *
+     * A **pinned** Collection is exempt from the retiring half. The user named it by URL precisely
+     * because the walk does not reach it — it is in no home set — so its absence from a listing is
+     * the expected result rather than news about the server. Retiring it would take the Collection
+     * out of the sync, and with it the Account's schedule if it was the only one selected. Only the
+     * sync's own answer for that URL may retire it.
+     *
      * Only ever called with [DiscoveryOutcome.completed].
      */
     fun merge(existing: List<DavCollection>, discovered: List<DavCollection>): List<DavCollection> {
         val fresh = discovered.associateBy { it.id }
         val kept = existing.map { prior ->
-            fresh[prior.id]?.copy(id = prior.id, selected = prior.selected) ?: prior.copy(available = false)
+            fresh[prior.id]?.copy(id = prior.id, selected = prior.selected, pinned = prior.pinned)
+                ?: if (prior.pinned) prior else prior.copy(available = false)
         }
         val added = discovered
             .filter { entry -> existing.none { it.id == entry.id } }

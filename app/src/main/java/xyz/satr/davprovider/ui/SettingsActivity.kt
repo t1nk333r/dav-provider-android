@@ -628,6 +628,9 @@ class SettingsActivity : AppCompatActivity() {
                 // New Collections arrive unselected.
                 selected = false,
                 available = true,
+                // Named by URL, so no walk will ever list it: pinned, or the next enumeration
+                // retires the one Collection the user had to type out by hand.
+                pinned = true,
             )
             val prior = screen.davAccount.collections.firstOrNull { it.id == collection.id }
             val updated = screen.davAccount.collections.filterNot { it.id == collection.id } +

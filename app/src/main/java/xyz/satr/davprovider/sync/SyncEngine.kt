@@ -260,6 +260,7 @@ class SyncEngine(
                         supportsSyncCollection = true,
                         capabilityCheckedAt = startedAt,
                         result = result,
+                        relisted = report.relisted,
                     )
                 }
 
@@ -317,6 +318,7 @@ class SyncEngine(
         supportsSyncCollection: Boolean?,
         capabilityCheckedAt: Long,
         result: SyncResult,
+        relisted: Boolean = false,
     ): CollectionOutcome {
         val local = mapper.localItems(account, collection)
 
@@ -330,6 +332,7 @@ class SyncEngine(
         // Steps 3 and 4, in batches of 50: each batch is committed, and its ETags are persisted with
         // the bodies they belong to, so a later diff cannot see a body without its ETag.
         var written = 0
+        val fetched = HashSet<String>(wanted.size)
         for (batch in wanted.entries.chunked(MULTIGET_BATCH_SIZE)) {
             ensureAccountRegistered(account)
 
@@ -338,31 +341,53 @@ class SyncEngine(
 
             val etags = batch.associate { it.key to it.value.etag }.filterKeys { it in bodies }
             written += mapper.upsert(account, collection, bodies, etags)
+            fetched += bodies.keys
         }
 
-        // Step 6. With a sync token the server reports removals explicitly, so only those are
-        // deleted; a full listing instead justifies deleting everything it did not mention. See
-        // [keptHrefs] for why the rows written above must be named in the answer.
-        val deleted = deleteMissing(account, collection, members, keptHrefs(fullListing, local.keys, members))
+        // An href the listing named and the multiget never answered. The body is simply absent —
+        // the batch carried on without it — and the only place that absence can still be noticed is
+        // here, before anything is claimed about the Collection.
+        val missing = wanted.keys.count { it !in fetched }
+
+        // Step 6, and only behind a listing that earned it. A truncated listing is a well-formed
+        // answer about part of a Collection, and deleting everything it did not mention would take
+        // the rest of the Collection with it.
+        val deleted =
+            if (members.completed) deleteMissing(account, collection, members, keptHrefs(fullListing, local.keys, members))
+            else 0
 
         // §7: re-apply server state and drop DIRTY, so an edit made in an editor that ignored
         // supportsUploading="false" reverts visibly within an interval.
         mapper.clearDirty(account, collection)
 
-        // Step 7, and not a line earlier: only now is the Collection complete.
-        mapper.writeState(
-            account,
-            collection,
-            CollectionState(
-                ctag = newCtag,
-                syncToken = newToken,
-                supportsSyncCollection = supportsSyncCollection,
-                capabilityCheckedAt = capabilityCheckedAt,
-                lastSuccessAt = clock(),
-            ),
-        )
+        // Step 7, and not a line earlier — nor at all when this run learned less than the Collection
+        // had to say. The state written here is what the *next* run trusts: store a CTag or a token
+        // now and the cheap check short-circuits a Collection whose missing item was never fetched,
+        // for as long as the server's own state sits still. Leaving it exactly as found costs one
+        // listing next run and is the difference between a retry and a permanent stall.
+        val incomplete = missing > 0 || members.truncated
+        if (!incomplete) {
+            mapper.writeState(
+                account,
+                collection,
+                CollectionState(
+                    ctag = newCtag,
+                    syncToken = newToken,
+                    supportsSyncCollection = supportsSyncCollection,
+                    capabilityCheckedAt = capabilityCheckedAt,
+                    lastSuccessAt = clock(),
+                ),
+            )
+        }
 
-        return CollectionOutcome(collection, written = written, deleted = deleted)
+        return CollectionOutcome(
+            collection,
+            written = written,
+            deleted = deleted,
+            missing = missing,
+            truncated = members.truncated,
+            relisted = relisted,
+        )
     }
 
     /**

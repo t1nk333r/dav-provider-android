@@ -163,6 +163,7 @@ internal object AccountExport {
                                         collection.color?.let { put(KEY_COLOR, it) }
                                         put(KEY_SELECTED, collection.selected)
                                         put(KEY_AVAILABLE, collection.available)
+                                        put(KEY_PINNED, collection.pinned)
                                     },
                                 )
                             }
@@ -201,6 +202,7 @@ internal object AccountExport {
                     color = if (collection.has(KEY_COLOR)) collection.getInt(KEY_COLOR) else null,
                     selected = collection.optBoolean(KEY_SELECTED, false),
                     available = collection.optBoolean(KEY_AVAILABLE, true),
+                    pinned = collection.optBoolean(KEY_PINNED, false),
                 )
             }
             entries += Entry(
@@ -314,4 +316,5 @@ internal object AccountExport {
     private const val KEY_COLOR = "color"
     private const val KEY_SELECTED = "selected"
     private const val KEY_AVAILABLE = "available"
+    private const val KEY_PINNED = "pinned"
 }

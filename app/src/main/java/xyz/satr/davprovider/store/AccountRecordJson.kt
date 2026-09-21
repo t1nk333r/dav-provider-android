@@ -49,6 +49,7 @@ internal object AccountRecordJson {
     private const val COLOR = "color"
     private const val SELECTED = "selected"
     private const val AVAILABLE = "available"
+    private const val PINNED = "pinned"
 
     /**
      * The record for [account]: header **names** only, never their values. Unset fields are left
@@ -114,6 +115,7 @@ internal object AccountRecordJson {
         COLOR to entry.color,
         SELECTED to entry.selected,
         AVAILABLE to entry.available,
+        PINNED to entry.pinned,
     )
 
     private fun decodeCollection(fields: Map<*, *>): DavCollection = DavCollection(
@@ -127,6 +129,9 @@ internal object AccountRecordJson {
         color = (fields[COLOR] as? Number)?.toInt(),
         selected = fields[SELECTED] as? Boolean ?: false,
         available = fields[AVAILABLE] as? Boolean ?: true,
+        // Absent in records written before Collections could be pinned: a walk found those, or
+        // they have already been retired, and either way a false is the truth about them.
+        pinned = fields[PINNED] as? Boolean ?: false,
     )
 
     private fun record(vararg fields: Pair<String, Any?>): Map<String, Any?> {

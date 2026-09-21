@@ -32,7 +32,7 @@ internal class UiSyncReporter(context: Context) : SyncReporter {
                 collectionId = outcome.collectionId,
                 outcome = collectionOutcome(outcome),
                 errorClass = outcome.error?.errorClass,
-                summary = outcome.error?.summary,
+                summary = outcome.error?.summary ?: plainSummary(outcome),
             )
         }
         store.record(
@@ -52,6 +52,7 @@ internal class UiSyncReporter(context: Context) : SyncReporter {
                 account = report.account.name,
                 collectionId = outcome.collectionId,
                 summary = outcome.error?.summary
+                    ?: plainSummary(outcome)
                     ?: appContext.getString(R.string.log_collection_ok),
                 errorClass = outcome.error?.errorClass,
                 httpStatus = outcome.error?.httpStatus,
@@ -90,11 +91,39 @@ internal class UiSyncReporter(context: Context) : SyncReporter {
         log.appendAll(entries)
     }
 
-    /** §5 class 3 is information: it must not mark a Collection failed nor contribute to Partial. */
+    /**
+     * §5 class 3 is information: it must not mark a Collection failed nor contribute to Partial.
+     *
+     * A Collection that ended incomplete is the mirror case — no error object at all, and yet not
+     * OK, because a run that fetched less than the listing named has nothing to report as success.
+     * It reads as failed here so the card shows Partial and the row says which Collection; it
+     * notifies nothing, because [SyncNotifications] fires on terminal error classes and this has
+     * none.
+     */
     private fun collectionOutcome(outcome: SyncCollectionOutcome) = when {
+        outcome.incomplete -> CollectionOutcome.FAILED
         outcome.error == null -> CollectionOutcome.OK
         outcome.error.errorClass == ErrorClass.ORIGIN_REFUSED_INFO -> CollectionOutcome.SKIPPED
         else -> CollectionOutcome.FAILED
+    }
+
+    /**
+     * What a run has to say about a Collection when no request failed.
+     *
+     * Null is the ordinary answer — the caller writes "ok". The three that are not null are the
+     * run admitting to something: two of them are less than the Collection had to tell it, and the
+     * third is the one recovery worth a line, since a token the server has forgotten explains a run
+     * that suddenly cost a whole listing.
+     */
+    private fun plainSummary(outcome: SyncCollectionOutcome): String? = when {
+        outcome.truncated -> appContext.getString(R.string.log_collection_truncated)
+        outcome.missing > 0 -> appContext.resources.getQuantityString(
+            R.plurals.log_collection_missing,
+            outcome.missing,
+            outcome.missing,
+        )
+        outcome.relisted -> appContext.getString(R.string.log_collection_relisted)
+        else -> null
     }
 
     private fun accountStatus(status: AccountSyncStatus) = when (status) {

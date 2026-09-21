@@ -13,6 +13,13 @@ enum class AccountSyncStatus { OK, PARTIAL, FAILED }
  *
  * [error] carries what the app observed, including the informational class 3 — which is why
  * [failed] exists separately: class 3 must not mark a Collection failed nor contribute to Partial.
+ *
+ * [incomplete] is the other half of that separation, in the opposite direction: a run can learn
+ * less than the Collection had to tell it without any request failing — a body the server listed
+ * and then would not hand over, a listing it admitted cutting short. Those runs must not read as
+ * OK, because the state they would otherwise store makes the next run skip the Collection
+ * entirely; and they must not notify, because nothing about them is terminal and the next run may
+ * well succeed. Carrying it as its own flag, rather than an invented error, is what gets both.
  */
 data class CollectionOutcome(
     val collectionId: String,
@@ -24,6 +31,12 @@ data class CollectionOutcome(
     val deleted: Int = 0,
     /** True when the cheap check showed the Collection had not changed at all. */
     val unchanged: Boolean = false,
+    /** Members this run asked for by href and the server never handed over. */
+    val missing: Int = 0,
+    /** True when the server said it was holding members back rather than listing them all. */
+    val truncated: Boolean = false,
+    /** True when a sync token the server no longer knew made this run list in full instead. */
+    val relisted: Boolean = false,
 ) {
     internal constructor(
         collection: DavCollection,
@@ -31,9 +44,19 @@ data class CollectionOutcome(
         written: Int = 0,
         deleted: Int = 0,
         unchanged: Boolean = false,
-    ) : this(collection.id, collection.displayName, error, written, deleted, unchanged)
+        missing: Int = 0,
+        truncated: Boolean = false,
+        relisted: Boolean = false,
+    ) : this(
+        collection.id, collection.displayName, error, written, deleted, unchanged,
+        missing, truncated, relisted,
+    )
 
-    val failed: Boolean get() = error != null && error.errorClass != ErrorClass.ORIGIN_REFUSED_INFO
+    /** True when this run ended knowing less than the Collection was going to tell it. */
+    val incomplete: Boolean get() = missing > 0 || truncated
+
+    val failed: Boolean
+        get() = incomplete || (error != null && error.errorClass != ErrorClass.ORIGIN_REFUSED_INFO)
 }
 
 /** Everything one run of one Account did. */

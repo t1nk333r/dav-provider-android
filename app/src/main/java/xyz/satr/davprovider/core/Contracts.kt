@@ -32,6 +32,14 @@ data class DavCollection(
     val color: Int?,
     val selected: Boolean = false,
     val available: Boolean = true,
+    /**
+     * True when the user named this Collection by its URL rather than a walk finding it.
+     *
+     * A discovery walk enumerates the home sets, and a Collection outside them is one it can say
+     * nothing about — including that it is gone. Without this flag the first walk retires exactly
+     * the Collections a user had to paste a URL for, which are the ones a server does not publish.
+     */
+    val pinned: Boolean = false,
 )
 
 /**

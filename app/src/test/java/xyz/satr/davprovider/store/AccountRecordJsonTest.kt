@@ -47,6 +47,9 @@ class AccountRecordJsonTest {
                     type = CollectionType.ADDRESS_BOOK,
                     displayName = null,
                     color = null,
+                    // Pasted by URL: a record that loses this is a Collection the next enumeration
+                    // retires, so the round trip has to carry it.
+                    pinned = true,
                 ),
             ),
         )

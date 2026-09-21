@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Pre-API-26 fallback (square): the adaptive background and the same mark
-     on one 108dp canvas. minSdk is 24, so this is what API 24 and 25 draw. -->
+<!-- Pre-API-26 fallback (square): the adaptive background and the same mark on one
+     108dp canvas. minSdk is 24, so this is what API 24 and 25 draw. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
@@ -12,31 +12,20 @@
         android:fillColor="@color/ic_launcher_background" />
 
     <path
-        android:pathData="M39.41,72.24 A12.77,12.77 0 0 1 36.67,47.00 A17.33,17.33 0 0 1 71.26,45.14 A13.68,13.68 0 0 1 68.59,72.24 Z"
-        android:strokeColor="#C7B9FF"
-        android:strokeWidth="5.22"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
+        android:pathData="M31.855,56.637 A13.000,13.000 0 0 1 48.302,39.732 A16.000,16.000 0 1 1 75.695,56.272 A11.000,11.000 0 0 1 69.000,76.000 L39.000,76.000 A11.000,11.000 0 0 1 31.855,56.637 Z M37.170,56.004 A9.880,9.880 0 0 1 49.669,43.157 A12.160,12.160 0 1 1 70.489,55.727 A8.360,8.360 0 0 1 65.400,70.720 L42.600,70.720 A8.360,8.360 0 0 1 37.170,56.004 Z"
+        android:fillColor="#C7B9FF"
+        android:fillType="evenOdd" />
 
     <path
-        android:pathData="M38.38,65.75 V53.25 H41.08 A6.25,6.25 0 0 1 41.08,65.75 Z"
-        android:strokeColor="#C7B9FF"
-        android:strokeWidth="3.99"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
+        android:pathData="M48.56 64.03Q48.56 68.50 43.86 68.50H39.99V59.56H43.86Q48.56 59.56 48.56 64.03ZM42.86 66.36H43.81Q45.62 66.36 45.62 64.42V63.64Q45.62 61.70 43.81 61.70H42.86Z"
+        android:fillColor="#C7B9FF" />
 
     <path
-        android:pathData="M49.52,65.75 L54.00,53.25 L58.48,65.75 M51.31,61.00 H56.69"
-        android:strokeColor="#C7B9FF"
-        android:strokeWidth="3.99"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
+        android:pathData="M55.90 68.50 55.52 67.24H52.39L52.01 68.50H49.07L52.34 59.56H55.68L58.94 68.50ZM52.99 65.24H54.92L53.99 62.05H53.93Z"
+        android:fillColor="#C7B9FF" />
 
     <path
-        android:pathData="M60.67,53.25 L65.15,65.75 L69.62,53.25"
-        android:strokeColor="#C7B9FF"
-        android:strokeWidth="3.99"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
+        android:pathData="M62.25 68.50 59.08 59.56H62.15L63.94 65.54H63.99L65.80 59.56H68.74L65.58 68.50Z"
+        android:fillColor="#C7B9FF" />
 
 </vector>

@@ -2,7 +2,7 @@
 <ContactsSource xmlns:android="http://schemas.android.com/apk/res/android">
     <ContactsDataKind
         android:mimeType="vnd.android.cursor.item/vnd.xyz.satr.davprovider.vcard"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@drawable/ic_contact"
         android:summaryColumn="data2"
         android:detailColumn="data3" />
 </ContactsSource>

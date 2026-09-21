@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108">
-  <!-- Source of the shipped mark; keep in step with res/drawable/ic_launcher_foreground.xml.
-       Dashed circle: the 34dp radius a Pixel launcher was measured to crop to. -->
-  <rect width="108" height="108" fill="#0D0E12"/>
-  <path d="M39.41,72.24 A12.77,12.77 0 0 1 36.67,47.00 A17.33,17.33 0 0 1 71.26,45.14 A13.68,13.68 0 0 1 68.59,72.24 Z" fill="none" stroke="#C7B9FF" stroke-linejoin="round" stroke-linecap="round" stroke-width="5.22"/><path d="M38.38,65.75 V53.25 H41.08 A6.25,6.25 0 0 1 41.08,65.75 Z" fill="none" stroke="#C7B9FF" stroke-linejoin="round" stroke-linecap="round" stroke-width="3.99"/><path d="M49.52,65.75 L54.00,53.25 L58.48,65.75 M51.31,61.00 H56.69" fill="none" stroke="#C7B9FF" stroke-linejoin="round" stroke-linecap="round" stroke-width="3.99"/><path d="M60.67,53.25 L65.15,65.75 L69.62,53.25" fill="none" stroke="#C7B9FF" stroke-linejoin="round" stroke-linecap="round" stroke-width="3.99"/>
-  <circle cx="54" cy="54" r="34" fill="none" stroke="#F85149" stroke-width="0.4" stroke-dasharray="2 2" opacity="0.6"/>
-</svg>

@@ -50,7 +50,7 @@ internal class SyncNotifications(private val context: Context) {
         val failure: SyncError = runFailure ?: terminalCollections.first().error ?: return
         ensureChannel()
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setSmallIcon(R.drawable.ic_stat_dav)
             .setContentTitle(context.getString(R.string.notification_title, label))
             .setContentText(failure.summary)
             .setStyle(NotificationCompat.BigTextStyle().bigText(failure.summary))

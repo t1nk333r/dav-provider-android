@@ -1,19 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  A cloud with DAV written in it: the protocol, and the server it is spoken to.
+  A cloud with DAV in it. Drawn from the supplied icon set (artwork/launcher/), which builds
+  the outline as a union of two circles and a pill minus the same union scaled to 0.76, and
+  sets the letters in Archivo 900.
 
-  Drawn as strokes of one colour, so this same drawable is the Android 13 monochrome layer:
-  the launcher tints every painted pixel and the letters stay legible because they are
-  separated from the outline by a gap, not by a second colour.
+  A vector drawable has neither masks nor text, so both were resolved here: the outline is the
+  exact boundary of that union, five arcs out and five back with an even-odd fill between them,
+  and the letters are the font's own outlines. The result was checked against the set's 432px
+  render: the outline matches to the pixel and the letters to a quarter of a dp.
 
-  Geometry is measured, not eyeballed. The outline is the exact union of three circles closed
-  by a flat base, so the arcs meet where the circles actually cross. The letters are the
-  largest DAV that fits the interior with 1.5dp of clearance from the outline at every point,
-  which is what stops them touching it at the shoulders.
-
-  The launcher masks the central 72dp of this 108dp canvas, not the whole of it, so the mark
-  has to live inside a 36dp radius of the centre — and a Pixel launcher crops to 34dp of it, measured. Its furthest painted point is 31.6dp,
-  which is what keeps the dome and the base off the edge of a circular mask.
+  One colour of fill, so the same drawable is also the Android 13 monochrome layer.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -22,31 +18,20 @@
     android:viewportHeight="108">
 
     <path
-        android:pathData="M39.41,72.24 A12.77,12.77 0 0 1 36.67,47.00 A17.33,17.33 0 0 1 71.26,45.14 A13.68,13.68 0 0 1 68.59,72.24 Z"
-        android:strokeColor="#C7B9FF"
-        android:strokeWidth="5.22"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
+        android:pathData="M31.855,56.637 A13.000,13.000 0 0 1 48.302,39.732 A16.000,16.000 0 1 1 75.695,56.272 A11.000,11.000 0 0 1 69.000,76.000 L39.000,76.000 A11.000,11.000 0 0 1 31.855,56.637 Z M37.170,56.004 A9.880,9.880 0 0 1 49.669,43.157 A12.160,12.160 0 1 1 70.489,55.727 A8.360,8.360 0 0 1 65.400,70.720 L42.600,70.720 A8.360,8.360 0 0 1 37.170,56.004 Z"
+        android:fillColor="#C7B9FF"
+        android:fillType="evenOdd" />
 
     <path
-        android:pathData="M38.38,65.75 V53.25 H41.08 A6.25,6.25 0 0 1 41.08,65.75 Z"
-        android:strokeColor="#C7B9FF"
-        android:strokeWidth="3.99"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
+        android:pathData="M48.56 64.03Q48.56 68.50 43.86 68.50H39.99V59.56H43.86Q48.56 59.56 48.56 64.03ZM42.86 66.36H43.81Q45.62 66.36 45.62 64.42V63.64Q45.62 61.70 43.81 61.70H42.86Z"
+        android:fillColor="#C7B9FF" />
 
     <path
-        android:pathData="M49.52,65.75 L54.00,53.25 L58.48,65.75 M51.31,61.00 H56.69"
-        android:strokeColor="#C7B9FF"
-        android:strokeWidth="3.99"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
+        android:pathData="M55.90 68.50 55.52 67.24H52.39L52.01 68.50H49.07L52.34 59.56H55.68L58.94 68.50ZM52.99 65.24H54.92L53.99 62.05H53.93Z"
+        android:fillColor="#C7B9FF" />
 
     <path
-        android:pathData="M60.67,53.25 L65.15,65.75 L69.62,53.25"
-        android:strokeColor="#C7B9FF"
-        android:strokeWidth="3.99"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
+        android:pathData="M62.25 68.50 59.08 59.56H62.15L63.94 65.54H63.99L65.80 59.56H68.74L65.58 68.50Z"
+        android:fillColor="#C7B9FF" />
 
 </vector>

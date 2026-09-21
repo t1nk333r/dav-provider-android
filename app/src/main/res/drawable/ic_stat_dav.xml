@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Notification icon: the same cloud without the letters, which do not survive 24dp.
+     White on transparent because the platform tints a small icon and ignores its colour. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <path
+        android:pathData="M7.070,12.578 A2.900,2.900 0 0 1 10.713,8.848 A3.600,3.600 0 0 1 16.891,12.545 A2.450,2.450 0 0 1 15.350,16.900 A2.450,2.450 0 0 1 15.350,16.900 L8.650,16.900 A2.450,2.450 0 0 1 8.650,16.900 A2.450,2.450 0 0 1 7.070,12.578 Z M9.140,12.335 A1.682,1.682 0 0 1 11.254,10.172 A2.088,2.088 0 0 1 14.837,12.316 A1.421,1.421 0 0 1 13.943,14.842 A1.421,1.421 0 0 1 13.943,14.842 L10.057,14.842 A1.421,1.421 0 0 1 10.057,14.842 A1.421,1.421 0 0 1 9.140,12.335 Z"
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd" />
+
+</vector>

@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- The near-black the rest of this project already uses; the mark is its lilac. -->
     <color name="ic_launcher_background">#0D0E12</color>
 </resources>

@@ -234,4 +234,56 @@ class EventTimeSyntaxTest {
             END:VCALENDAR
         """.trimIndent().replace("\n", "\r\n")
     }
+
+    @Test
+    fun `a single event stated as DURATION is not zero-length`() {
+        // RFC 5545 lets any VEVENT state its length either way. Read as DTEND-only, a legal
+        // "DTSTART + DURATION:PT1H" became a zero-length row on the phone, and an edit to its time
+        // then wrote that zero length back to the server.
+        val times = eventTimes(
+            shape = EventShape.SINGLE,
+            start = IcalDate("20260310T100000", "Europe/Berlin"),
+            end = null,
+            recurrenceId = null,
+            explicitDuration = "PT1H",
+            startZone = berlin,
+            endZone = null,
+            recurrenceIdZone = null,
+        )
+        assertNotNull(times)
+        assertNull("a single row must never carry DURATION", times!!.duration)
+        assertEquals(Instant.parse("2026-03-10T10:00:00Z").toEpochMilli(), times.dtEnd)
+    }
+
+    @Test
+    fun `an override stated as DURATION keeps its length`() {
+        val times = eventTimes(
+            shape = EventShape.OVERRIDE,
+            start = IcalDate("20260317T110000", "Europe/Berlin"),
+            end = null,
+            recurrenceId = IcalDate("20260317T100000", "Europe/Berlin"),
+            explicitDuration = "PT30M",
+            startZone = berlin,
+            endZone = null,
+            recurrenceIdZone = berlin,
+        )
+        assertNotNull(times)
+        assertNull(times!!.duration)
+        assertEquals(Instant.parse("2026-03-17T10:30:00Z").toEpochMilli(), times.dtEnd)
+    }
+
+    @Test
+    fun `DTEND wins when a component states both`() {
+        val times = eventTimes(
+            shape = EventShape.SINGLE,
+            start = IcalDate("20260310T100000", "Europe/Berlin"),
+            end = IcalDate("20260310T101500", "Europe/Berlin"),
+            recurrenceId = null,
+            explicitDuration = "PT5H",
+            startZone = berlin,
+            endZone = berlin,
+            recurrenceIdZone = null,
+        )
+        assertEquals(Instant.parse("2026-03-10T09:15:00Z").toEpochMilli(), times!!.dtEnd)
+    }
 }

@@ -83,8 +83,19 @@ internal fun eventTimes(
 
     val explicitEnd = if (end == null) null else epochMillis(end, if (allDay) ZoneOffset.UTC else endZone ?: startZone)
     if (end != null && explicitEnd == null) return null
-    // RFC 5545: a DATE start with no end lasts one day, a DATE-TIME start with no end has none.
-    val endInstant = explicitEnd ?: if (allDay) dtStart + MILLIS_PER_DAY else dtStart
+    // RFC 5545 §3.6.1: DTEND and DURATION are alternatives on any VEVENT, not only a recurring one.
+    // A DATE start with neither lasts one day, a DATE-TIME start with neither has no duration at
+    // all. Reading DURATION only for the recurring master turned a perfectly legal
+    // "DTSTART + DURATION:PT1H" single event into a zero-length row, and an edit to its time then
+    // wrote that zero length back to the server as PT0S.
+    val durationMillis = explicitDuration
+        ?.takeIf { it.isNotBlank() }
+        ?.let { durationSeconds(it) }
+        ?.takeIf { it > 0 }
+        ?.times(1000L)
+    val endInstant = explicitEnd
+        ?: durationMillis?.let { dtStart + it }
+        ?: if (allDay) dtStart + MILLIS_PER_DAY else dtStart
 
     val endTimeZone = if (!allDay && end != null && endZone != null && endZone != startZone) {
         eventTimeZoneId(endZone)

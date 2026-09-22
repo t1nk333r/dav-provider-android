@@ -29,6 +29,14 @@ data class CollectionOutcome(
     val written: Int = 0,
     /** Rows removed because the server's listing no longer contained them. */
     val deleted: Int = 0,
+    /** Changes step U is done with: the server answered for them, or there was nothing to send. */
+    val uploaded: Int = 0,
+    /** Changes still on the phone: rows this run could not send, or rows that moved under an answer. */
+    val pending: Int = 0,
+    /** Changes given up because the Collection is not writable. */
+    val refused: Int = 0,
+    /** The keys of the changes the server's copy replaced under an edit. */
+    val conflicts: List<String> = emptyList(),
     /** True when the cheap check showed the Collection had not changed at all. */
     val unchanged: Boolean = false,
     /** Members this run asked for by href and the server never handed over. */
@@ -43,20 +51,34 @@ data class CollectionOutcome(
         error: SyncError? = null,
         written: Int = 0,
         deleted: Int = 0,
+        uploaded: Int = 0,
+        pending: Int = 0,
+        refused: Int = 0,
+        conflicts: List<String> = emptyList(),
         unchanged: Boolean = false,
         missing: Int = 0,
         truncated: Boolean = false,
         relisted: Boolean = false,
     ) : this(
-        collection.id, collection.displayName, error, written, deleted, unchanged,
-        missing, truncated, relisted,
+        collection.id, collection.displayName, error, written, deleted, uploaded, pending, refused,
+        conflicts, unchanged, missing, truncated, relisted,
     )
 
     /** True when this run ended knowing less than the Collection was going to tell it. */
     val incomplete: Boolean get() = missing > 0 || truncated
 
+    /**
+     * True when the Collection did not finish this run.
+     *
+     * [pending] is the third way it can fail to finish: the listing may have completed perfectly and
+     * the Collection still has something of this phone's that never left it. A conflict is
+     * deliberately not one of these — the row was given up and the same run fetched the server's
+     * version onto it, so there is nothing left to retry, which is the difference between "come back"
+     * and "this is what the server has".
+     */
     val failed: Boolean
-        get() = incomplete || (error != null && error.errorClass != ErrorClass.ORIGIN_REFUSED_INFO)
+        get() = incomplete || pending > 0 ||
+            (error != null && error.errorClass != ErrorClass.ORIGIN_REFUSED_INFO)
 }
 
 /** Everything one run of one Account did. */

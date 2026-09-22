@@ -355,10 +355,21 @@ class SettingsActivity : AppCompatActivity() {
         val report = screen.report?.collections?.firstOrNull { it.collectionId == collection.id }
         row.findViewById<TextView>(R.id.collection_state).text = collectionState(collection, report)
 
+        // §7: neither syncadapter_*.xml nor contacts.xml can be told about one Collection, so the
+        // engine refuses what a read-only one holds, and this line is where the user is told.
+        val access = row.findViewById<TextView>(R.id.collection_access)
+        access.setText(R.string.collection_read_only)
+        access.visibility = if (collection.writable) View.GONE else View.VISIBLE
+
         val check = row.findViewById<CheckBox>(R.id.collection_selected)
         check.isChecked = collection.selected
         // Listener last: re-rendering must not look like the user toggled something.
         check.setOnCheckedChangeListener { _, selected -> writeSelection(screen, collection, selected) }
+
+        val writable = row.findViewById<CheckBox>(R.id.collection_writable)
+        writable.isChecked = collection.writable
+        // Listener last, for the same reason.
+        writable.setOnCheckedChangeListener { _, allowed -> writeWritable(screen, collection, allowed) }
         return row
     }
 
@@ -401,6 +412,29 @@ class SettingsActivity : AppCompatActivity() {
             // §8: the schedule follows the selection, and it follows it here because this screen is
             // where an Account first comes to have something to sync.
             SyncScheduler.applySelection(this, screen.account, updated)
+            main.post { if (isActive()) refresh() }
+        }
+    }
+
+    /**
+     * §7's write switch, written through the same writer as the selection because it is the same
+     * kind of thing: a Collection's own setting, stored on the Account record.
+     *
+     * Nothing is rescheduled for it — what syncs, and when, does not depend on which way edits
+     * flow — but the screen is redrawn, because "Read-only" and the switch are two views of the one
+     * flag and a failed write has to put the row back where it was.
+     */
+    private fun writeWritable(screen: AccountScreen, collection: DavCollection, writable: Boolean) {
+        val updated = screen.davAccount.collections.map {
+            if (it.id == collection.id) it.copy(writable = writable) else it
+        }
+        executor.execute {
+            try {
+                selectionWriter().saveCollections(screen.account, updated)
+            } catch (e: Exception) {
+                main.post { if (isActive()) { showMessage(getString(R.string.save_failed, e.javaClass.simpleName)); refresh() } }
+                return@execute
+            }
             main.post { if (isActive()) refresh() }
         }
     }

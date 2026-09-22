@@ -124,6 +124,15 @@ class SyncErrorClassifierImpl : SyncErrorClassifier {
             status in 200..299 ->
                 evidence.toError(ErrorClass.ORIGIN_REFUSED_INFO, ErrorSummary.NO_ERROR)
 
+            // A bare 4xx on a write is the Origin refusing to write, not something rewriting the
+            // response: rule 4 has already caught the HTML case, and a 403 on a PUT is access
+            // control. Class 12 would word it "something between the app and the server changed the
+            // response" and send the user hunting for a broken middlebox, when what happened is that
+            // the server will not take this request. Class 10 says that, and it is neither terminal
+            // nor retryable, so the item is reported and the rest of the run carries on.
+            status in 400..499 && isDavWrite(evidence.requestMethod) ->
+                evidence.toError(ErrorClass.METHOD_REFUSED, METHOD_REFUSED_WRITE)
+
             // Anything left is a response the Origin's contract does not explain, e.g. a bare 403 or
             // a redirect to a web page: something in between changed it. The status still shows verbatim.
             else ->
@@ -194,6 +203,27 @@ private fun firstConditionName(error: Element): String? {
  */
 private fun isDavRequest(method: String?): Boolean =
     method == null || !(method.equals("GET", ignoreCase = true) || method.equals("HEAD", ignoreCase = true))
+
+/**
+ * True for the two methods that change a resource.
+ *
+ * A null method is not one of them: the engine records the method of every request it makes, so a
+ * classification with none is a failure that never reached a request, and those keep the class they
+ * have today.
+ */
+private fun isDavWrite(method: String?): Boolean =
+    method.equals("PUT", ignoreCase = true) || method.equals("DELETE", ignoreCase = true)
+
+/**
+ * Class 10's line for a write: the same class as [ErrorSummary.METHOD_REFUSED] with the one thing
+ * the user can do about it, which for a write is the Collection's own setting.
+ *
+ * It sits here rather than beside the taxonomy's other lines because it is the one line that differs
+ * by direction: [ErrorSummary.METHOD_REFUSED] describes a method the server does not implement,
+ * which is what a refused read means; this describes a resource it will not write.
+ */
+private const val METHOD_REFUSED_WRITE =
+    "The server rejected this request type — mark the collection read-only if this is expected"
 
 private fun ResponseEvidence.looksLikeHtml(): Boolean {
     if (contentType?.contains("text/html", ignoreCase = true) == true) return true

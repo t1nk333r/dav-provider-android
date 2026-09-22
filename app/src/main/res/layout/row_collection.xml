@@ -36,6 +36,26 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:textAppearance="?attr/textAppearanceBodySmall" />
+
+        <!-- Set from collection.writable. A Collection the user has not made writable is one the
+             engine refuses to send edits for, so the row has to say so rather than leave the
+             switch's position to be read as the answer. -->
+        <TextView
+            android:id="@+id/collection_access"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:visibility="gone" />
+
+        <!-- The per-Collection write switch, on the same row as the selection one: whether an edit
+             made on the phone may be sent to the server for this Collection. Neither
+             syncadapter_*.xml nor contacts.xml can be told about one Collection, so this switch is
+             the whole of the user's say. -->
+        <CheckBox
+            android:id="@+id/collection_writable"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/collection_writable" />
     </LinearLayout>
 
     <CheckBox

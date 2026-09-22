@@ -7,6 +7,8 @@ import at.bitfire.dav4jvm.ktor.DavCollection as DavCollectionResource
 import at.bitfire.dav4jvm.ktor.MultiStatusItem
 import at.bitfire.dav4jvm.ktor.Response as DavResponse
 import at.bitfire.dav4jvm.ktor.exception.DavException
+import at.bitfire.dav4jvm.ktor.exception.NotFoundException
+import at.bitfire.dav4jvm.ktor.exception.PreconditionFailedException
 import at.bitfire.dav4jvm.property.caldav.CalDAV
 import at.bitfire.dav4jvm.property.caldav.CalendarData
 import at.bitfire.dav4jvm.property.caldav.GetCTag
@@ -16,7 +18,12 @@ import at.bitfire.dav4jvm.property.webdav.ResourceType
 import at.bitfire.dav4jvm.property.webdav.SyncToken
 import at.bitfire.dav4jvm.property.webdav.WebDAV
 import io.ktor.client.HttpClient
+import io.ktor.http.ContentType
+import io.ktor.http.Headers
+import io.ktor.http.HttpHeaders
 import io.ktor.http.Url
+import io.ktor.http.content.TextContent
+import io.ktor.http.protocolWithAuthority
 import xyz.satr.davprovider.core.CollectionType
 import xyz.satr.davprovider.core.DavCollection
 import xyz.satr.davprovider.core.RemoteItem
@@ -62,6 +69,15 @@ internal class CollectionSession(
 ) {
 
     private var location: Url = Url(collection.url)
+
+    /**
+     * The Collection's own URL, as the last request left it: the location a redirect settled on.
+     *
+     * Creates are addressed from this and a new item's key is checked against it, rather than
+     * against the URL the Account stored. After a redirect the two differ, and a create PUT to the
+     * path it redirected *from* is a resource no listing of the Collection will ever name.
+     */
+    val collectionUrl: Url get() = location
 
     /** The DAV method of the last request, for §5's evidence. */
     var lastMethod: String? = null
@@ -222,15 +238,157 @@ internal class CollectionSession(
         return bodies
     }
 
-    private fun newResource(): DavCollectionResource = when (collection.type) {
-        CollectionType.ADDRESS_BOOK -> DavAddressBook(http, location)
-        CollectionType.CALENDAR -> DavCalendar(http, location)
+    /**
+     * §6 step U: one resource, sent whole.
+     *
+     * [href] is a path inside the Collection — the shape every key in this class has, because it is
+     * the href's path that survives a redirect, a scheme change or a proxy. The request is built at
+     * the location the last request left rather than at the URL the Account stored, so a server that
+     * redirects is answered the same way here as it is for a listing; a fresh resource per request
+     * for dav4jvm#209, the same as everywhere else in this class.
+     *
+     * The conditional headers are the caller's, because only it knows what the row's state is: an
+     * update carries `If-Match` with the ETag it last stored, a create carries `If-None-Match: *` so
+     * the name it minted cannot overwrite an item this run has not seen.
+     */
+    suspend fun put(
+        href: String,
+        body: String,
+        contentType: String,
+        ifMatch: String?,
+        ifNoneMatchAny: Boolean,
+    ): PutAnswer {
+        onOperationStart()
+        val resource = resourceAt(href)
+        lastMethod = "PUT"
+
+        val headers = Headers.build {
+            ifMatch?.let { append(HttpHeaders.IfMatch, entityTag(it)) }
+            if (ifNoneMatchAny) append(HttpHeaders.IfNoneMatch, "*")
+        }
+
+        return try {
+            resource.put<PutAnswer>(
+                TextContent(body, ContentType.parse(contentType)),
+                headers,
+            ) { response ->
+                PutAnswer.Stored(
+                    etag = response.headers[HttpHeaders.ETag],
+                    location = locationOf(response.headers[HttpHeaders.Location], resource.location),
+                )
+            }
+        } catch (e: PreconditionFailedException) {
+            // The answer, not a failure: the precondition the row's own state dictated did not hold.
+            PutAnswer.PreconditionFailed
+        }
+        // [location] is deliberately not moved here. It is the Collection's own address, followed
+        // across redirects so that the listing and the multiget keep addressing the right place; a
+        // member's final URL says nothing about it. Adopting it would point every later request in
+        // this run at the item just written, which answers 404 for a REPORT.
+    }
+
+    /**
+     * §6 step U: one resource, removed.
+     *
+     * A 404 is an answer rather than a failure (§2 of the lifecycle): the server and the phone agree
+     * the item is gone, and the tombstone is dropped either way. `If-Match` is sent whenever the row
+     * has an ETag; a row that has none is deleted unconditionally, because the server has given
+     * nothing to condition on and refusing to ask would leave the tombstone there forever.
+     */
+    suspend fun delete(href: String, ifMatch: String?): DeleteAnswer {
+        onOperationStart()
+        val resource = resourceAt(href)
+        lastMethod = "DELETE"
+
+        val headers = Headers.build {
+            ifMatch?.let { append(HttpHeaders.IfMatch, entityTag(it)) }
+        }
+
+        return try {
+            resource.delete<DeleteAnswer>(headers) { DeleteAnswer.Gone }
+        } catch (e: NotFoundException) {
+            // The server does not have it, which is what the delete wanted.
+            DeleteAnswer.Gone
+        } catch (e: PreconditionFailedException) {
+            DeleteAnswer.PreconditionFailed
+        }
+        // [location] is left where it was, for the reason given in [put].
+    }
+
+    /**
+     * An ETag as `If-Match` must spell it: an entity-tag carries its quotes (RFC 9110 §8.8.3), and a
+     * server compares the whole token including them.
+     *
+     * The two places an ETag reaches a row disagree about that. A `PUT`'s `ETag` header arrives
+     * quoted and is stored as it came, while the listing's `getetag` is parsed out of XML with the
+     * quotes already stripped — so a row's stored value may be either spelling. Sent back bare, a
+     * server that quotes its tags sees no match and answers 412, which this app reads as "the
+     * server's copy moved" and gives the user's edit up. Found on a device: every second edit to
+     * the same item was lost that way, with a conflict reported for a change nobody else had made.
+     */
+    private fun entityTag(value: String): String {
+        val trimmed = value.trim()
+        val quoted = trimmed.startsWith("\"") && trimmed.endsWith("\"") && trimmed.length >= 2
+        return if (quoted || trimmed.startsWith("W/\"")) trimmed else "\"$trimmed\""
+    }
+
+    private fun newResource(): DavCollectionResource = resourceAt(location)
+
+    /** A resource for one request: the Collection itself, or one member of it. */
+    private fun resourceAt(url: Url): DavCollectionResource = when (collection.type) {
+        CollectionType.ADDRESS_BOOK -> DavAddressBook(http, url)
+        CollectionType.CALENDAR -> DavCalendar(http, url)
+    }
+
+    /** The resource a member's path addresses, built on the location the last request left. */
+    private fun resourceAt(href: String): DavCollectionResource =
+        resourceAt(Url(location.protocolWithAuthority + href))
+
+    /**
+     * A `Location` header as a URL, or null when there is none worth adopting.
+     *
+     * `Location` is a URI reference (RFC 7231 §7.1.2), so a server may send a path rather than an
+     * absolute URL, and both spellings are resolved against the request that was just answered. A
+     * value that parses as neither is reported as no `Location` at all, which leaves the caller
+     * keying the item by the path it PUT to — always inside the Collection.
+     */
+    private fun locationOf(header: String?, request: Url): Url? {
+        val value = header?.takeIf { it.isNotBlank() } ?: return null
+        val target = when {
+            "://" in value -> value
+            value.startsWith("/") -> request.protocolWithAuthority + value
+            else -> request.protocolWithAuthority + request.encodedPath.substringBeforeLast('/') + "/" + value
+        }
+        return runCatching { Url(target) }.getOrNull()
     }
 
     private fun bodyOf(response: DavResponse): String? = when (collection.type) {
         CollectionType.ADDRESS_BOOK -> response[AddressData::class.java]?.card
         CollectionType.CALENDAR -> response[CalendarData::class.java]?.iCalendar
     }
+}
+
+/** The answer to one `PUT` or `DELETE`, as §2 to §4's answer tables read it. */
+internal sealed interface WriteAnswer
+
+/** What one `PUT` answered. */
+internal sealed interface PutAnswer : WriteAnswer {
+
+    /** 2xx: the server has the resource. [etag] and [location] are what it returned, either null. */
+    data class Stored(val etag: String?, val location: Url?) : PutAnswer
+
+    /** 412: the precondition the row's own state dictated did not hold. */
+    data object PreconditionFailed : PutAnswer
+}
+
+/** What one `DELETE` answered. */
+internal sealed interface DeleteAnswer : WriteAnswer {
+
+    /** 2xx, or 404 for an item the server no longer has: either way it is not there any more. */
+    data object Gone : DeleteAnswer
+
+    /** 412: the server's item moved after this phone last saw it. */
+    data object PreconditionFailed : DeleteAnswer
 }
 
 /** What one `sync-collection` REPORT answered. */

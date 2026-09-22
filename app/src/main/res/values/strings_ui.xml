@@ -92,6 +92,10 @@
     <string name="status_detail_ok">All Collections synced</string>
     <string name="status_detail_partial">%1$d of %2$d Collections failed</string>
     <string name="status_detail_failed">All %1$d Collections failed</string>
+    <plurals name="status_detail_refused">
+        <item quantity="one">1 edit was refused: its Collection is read-only</item>
+        <item quantity="other">%1$d edits were refused: their Collections are read-only</item>
+    </plurals>
     <string name="status_detail_never_synced">No sync has run for this account</string>
     <string name="last_sync">Last sync: %1$s</string>
     <string name="last_sync_never">Last sync: never</string>
@@ -139,6 +143,10 @@
     <string name="collection_not_synced">not synced yet</string>
     <string name="collection_synced">synced</string>
     <string name="collection_select">Sync this Collection</string>
+    <!-- The write switch. Off is the default and the safe direction: the server is the source of
+         truth until the user says this Collection may be edited from this phone. -->
+    <string name="collection_writable">Send edits made on this phone to the server</string>
+    <string name="collection_read_only">Read-only</string>
     <string name="type_addressbook">address book</string>
     <string name="type_calendar">calendar</string>
     <string name="remove_account">Remove account</string>
@@ -162,6 +170,22 @@
 
     <string name="settings_version">Version %1$s (%2$d)</string>
     <string name="log_collection_ok">ok</string>
+    <plurals name="log_collection_pending">
+        <item quantity="one">1 edit could not be sent: it is still on this phone, and the next sync tries it again</item>
+        <item quantity="other">%1$d edits could not be sent: they are still on this phone, and the next sync tries them again</item>
+    </plurals>
+    <plurals name="log_collection_conflict">
+        <item quantity="one">1 edit was replaced by the server\'s version: the server\'s copy had changed, so the edit here was given up</item>
+        <item quantity="other">%1$d edits were replaced by the server\'s version: the server\'s copies had changed, so the edits here were given up</item>
+    </plurals>
+    <plurals name="log_collection_refused">
+        <item quantity="one">1 edit was refused: this Collection is read-only, so nothing here is sent to the server</item>
+        <item quantity="other">%1$d edits were refused: this Collection is read-only, so nothing here is sent to the server</item>
+    </plurals>
+    <plurals name="log_run_uploaded">
+        <item quantity="one">ok (sent 1 edit to the server)</item>
+        <item quantity="other">ok (sent %1$d edits to the server)</item>
+    </plurals>
     <plurals name="log_collection_missing">
         <item quantity="one">the server listed 1 item and then did not send it: nothing was recorded, so the next run asks again</item>
         <item quantity="other">the server listed %1$d items and then did not send them: nothing was recorded, so the next run asks again</item>

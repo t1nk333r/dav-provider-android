@@ -69,6 +69,9 @@ internal class SyncLog(private val file: File) {
         val certificateOffered: Boolean? = null,
         val written: Int? = null,
         val deleted: Int? = null,
+        /** Resources this run sent to the server, and edits it could not send. */
+        val uploaded: Int? = null,
+        val pending: Int? = null,
         val unchanged: Boolean? = null,
         val firstBodyLine: String? = null,
         val davCondition: String? = null,
@@ -96,6 +99,8 @@ internal class SyncLog(private val file: File) {
         certificateOffered: Boolean? = null,
         written: Int? = null,
         deleted: Int? = null,
+        uploaded: Int? = null,
+        pending: Int? = null,
         unchanged: Boolean? = null,
         firstBodyLine: String? = null,
         davCondition: String? = null,
@@ -115,6 +120,8 @@ internal class SyncLog(private val file: File) {
         certificateOffered = certificateOffered,
         written = written,
         deleted = deleted,
+        uploaded = uploaded,
+        pending = pending,
         unchanged = unchanged,
         firstBodyLine = firstBodyLine,
         davCondition = davCondition,
@@ -263,6 +270,10 @@ internal class SyncLog(private val file: File) {
         KEY_CERTIFICATE to entry.certificateOffered?.let { yesNo(it) },
         KEY_WRITTEN to entry.written?.toString(),
         KEY_DELETED to entry.deleted?.toString(),
+        // Written only when a run had something to send, so a read-only Collection's line is
+        // unchanged from the build before uploads existed.
+        KEY_UPLOADED to entry.uploaded?.takeIf { it > 0 || (entry.pending ?: 0) > 0 }?.toString(),
+        KEY_PENDING to entry.pending?.takeIf { it > 0 }?.toString(),
         KEY_UNCHANGED to entry.unchanged?.let { yesNo(it) },
         // The one value that comes from the server, and the only one long enough to matter.
         KEY_BODY to entry.firstBodyLine?.let { clip(it, MAX_BODY_LINE) },
@@ -299,6 +310,8 @@ internal class SyncLog(private val file: File) {
             certificateOffered = fields[KEY_CERTIFICATE]?.let { yesNoOrNull(it) },
             written = fields[KEY_WRITTEN]?.toIntOrNull(),
             deleted = fields[KEY_DELETED]?.toIntOrNull(),
+            uploaded = fields[KEY_UPLOADED]?.toIntOrNull(),
+            pending = fields[KEY_PENDING]?.toIntOrNull(),
             unchanged = fields[KEY_UNCHANGED]?.let { yesNoOrNull(it) },
             firstBodyLine = fields[KEY_BODY],
             davCondition = fields[KEY_CONDITION],
@@ -377,6 +390,8 @@ internal class SyncLog(private val file: File) {
         const val KEY_CERTIFICATE = "certificate"
         const val KEY_WRITTEN = "written"
         const val KEY_DELETED = "deleted"
+        const val KEY_UPLOADED = "uploaded"
+        const val KEY_PENDING = "pending"
         const val KEY_UNCHANGED = "unchanged"
         const val KEY_BODY = "body"
         const val KEY_CONDITION = "condition"

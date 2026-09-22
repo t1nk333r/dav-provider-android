@@ -50,6 +50,7 @@ internal object AccountRecordJson {
     private const val SELECTED = "selected"
     private const val AVAILABLE = "available"
     private const val PINNED = "pinned"
+    private const val WRITABLE = "writable"
 
     /**
      * The record for [account]: header **names** only, never their values. Unset fields are left
@@ -116,6 +117,7 @@ internal object AccountRecordJson {
         SELECTED to entry.selected,
         AVAILABLE to entry.available,
         PINNED to entry.pinned,
+        WRITABLE to entry.writable,
     )
 
     private fun decodeCollection(fields: Map<*, *>): DavCollection = DavCollection(
@@ -132,6 +134,9 @@ internal object AccountRecordJson {
         // Absent in records written before Collections could be pinned: a walk found those, or
         // they have already been retired, and either way a false is the truth about them.
         pinned = fields[PINNED] as? Boolean ?: false,
+        // Absent in every record written while the app was read-only, and false is the truth about
+        // those: an upgrade must not start writing to a server the user never offered it.
+        writable = fields[WRITABLE] as? Boolean ?: false,
     )
 
     private fun record(vararg fields: Pair<String, Any?>): Map<String, Any?> {

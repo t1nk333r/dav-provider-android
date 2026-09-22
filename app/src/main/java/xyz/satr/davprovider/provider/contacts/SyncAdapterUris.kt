@@ -25,9 +25,10 @@ internal const val VCARD_MIME_TYPE = "vnd.android.cursor.item/vnd.xyz.satr.davpr
  * carries a selection (`update`, `delete`) is scoped to one Account, since none of those tables can
  * join to the account by itself.
  *
- * Every write in this package goes through here. Read-only v1 has no user-initiated write path, so
- * uniformity is what keeps a row written by this app distinguishable from one a user edited — which
- * is what lets [ContactsMapper.clearDirty] reset `DIRTY` without the provider re-dirtying it.
+ * Every write in this package goes through here, and the uniformity is what makes the write-back
+ * lifecycle work at all: the provider dirties a raw contact on any write that is not a sync adapter's,
+ * so [ContactsMapper.markUploaded] — the one place `DIRTY` is cleared, and only after the server has
+ * answered the upload — has to write through this URI or its own clear would re-dirty the row.
  */
 internal fun Uri.forSyncAdapter(account: Account): Uri = buildUpon()
     .appendQueryParameter(ContactsContract.CALLER_IS_SYNCADAPTER, "true")

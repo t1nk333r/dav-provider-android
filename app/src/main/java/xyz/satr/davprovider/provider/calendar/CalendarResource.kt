@@ -1,6 +1,7 @@
 package xyz.satr.davprovider.provider.calendar
 
 import net.fortuna.ical4j.data.CalendarBuilder
+import net.fortuna.ical4j.model.Calendar
 import net.fortuna.ical4j.model.Component
 import net.fortuna.ical4j.model.Parameter
 import net.fortuna.ical4j.model.Property
@@ -167,9 +168,33 @@ private val VENDOR_PREFIXES = listOf(
     "citadel.org/",
 )
 
-internal fun parseResource(ics: String): ParsedResource {
+internal fun parseResource(ics: String): ParsedResource = parseResource(parseCalendar(ics))
+
+internal fun parseCalendar(ics: String): Calendar {
     enableRelaxedHints()
-    val calendar = CalendarBuilder().build(StringReader(ics))
+    return CalendarBuilder().build(StringReader(ics))
+}
+
+/**
+ * The components of one resource, beside the zones they name.
+ *
+ * The split is shared with the write path, which patches the component a row came from: it must
+ * choose the master by the same rule the read path used, or a patch would address a component the
+ * row does not describe.
+ */
+internal class ResourceComponents(
+    /** The component a master row continues: the first without `RECURRENCE-ID`, else the first. */
+    val master: VEvent?,
+    /** The components carrying a `RECURRENCE-ID`, in resource order; empty without a master. */
+    val overrides: List<VEvent>,
+    val zones: IcalZoneIndex,
+    /** `UID`s other than the primary one, which a single href cannot address. */
+    val droppedUids: List<String>,
+    /** Components of the primary `UID` that a single href cannot address. */
+    val droppedComponents: Int,
+)
+
+internal fun resourceComponents(calendar: Calendar): ResourceComponents {
     val zones = IcalZoneIndex.of(calendar.getComponents<VTimeZone>(Component.VTIMEZONE))
     val byUid = calendar.getComponents<VEvent>(Component.VEVENT).groupBy { event ->
         event.getUid().map { it.value }.orElse(null)
@@ -180,25 +205,41 @@ internal fun parseResource(ics: String): ParsedResource {
     val primary = byUid.entries.firstOrNull { (_, events) ->
         events.any { it.dateProperty(Property.RECURRENCE_ID) == null }
     } ?: byUid.entries.firstOrNull()
-        ?: return ParsedResource(null, emptyList(), zones, emptyList(), 0)
+        ?: return ResourceComponents(null, emptyList(), zones, emptyList(), 0)
 
-    val components = primary.value.map { it.toParsedEvent() }
-    val declaredMaster = components.firstOrNull { it.recurrenceId == null }
+    val declared = primary.value.firstOrNull { it.dateProperty(Property.RECURRENCE_ID) == null }
     // An exception whose master is missing cannot be linked to an occurrence; storing it as an
     // event of its own keeps it visible, which beats an orphan row the calendar app never shows.
-    val master = declaredMaster ?: components.first().copy(shape = EventShape.SINGLE)
-    val overrides = if (declaredMaster == null) emptyList() else components.filter { it.recurrenceId != null }
+    val master = declared ?: primary.value.first()
+    val overrides = if (declared == null) {
+        emptyList()
+    } else {
+        primary.value.filter { it.dateProperty(Property.RECURRENCE_ID) != null }
+    }
 
-    return ParsedResource(
+    return ResourceComponents(
         master = master,
         overrides = overrides,
         zones = zones,
         droppedUids = byUid.keys.filterNotNull().filter { it != primary.key },
-        droppedComponents = components.size - (1 + overrides.size),
+        droppedComponents = primary.value.size - (1 + overrides.size),
     )
 }
 
-private fun VEvent.toParsedEvent(): ParsedEvent {
+internal fun parseResource(calendar: Calendar): ParsedResource {
+    val components = resourceComponents(calendar)
+    val component = components.master ?: return ParsedResource(null, emptyList(), components.zones, emptyList(), 0)
+    val master = component.toParsedEvent()
+    return ParsedResource(
+        master = if (master.recurrenceId == null) master else master.copy(shape = EventShape.SINGLE),
+        overrides = components.overrides.map { it.toParsedEvent() },
+        zones = components.zones,
+        droppedUids = components.droppedUids,
+        droppedComponents = components.droppedComponents,
+    )
+}
+
+internal fun VEvent.toParsedEvent(): ParsedEvent {
     val recurrenceId = dateProperty(Property.RECURRENCE_ID)
     val rrules = stringProperties(Property.RRULE)
     val rdates = dateListProperty(Property.RDATE)
@@ -237,7 +278,7 @@ private fun VEvent.toParsedEvent(): ParsedEvent {
     )
 }
 
-private fun VAlarm.toParsedReminder(): ParsedReminder? {
+internal fun VAlarm.toParsedReminder(): ParsedReminder? {
     val method = when (stringProperty("ACTION")?.uppercase()) {
         "DISPLAY" -> AlarmMethod.ALERT
         "EMAIL" -> AlarmMethod.EMAIL
@@ -280,14 +321,14 @@ private fun propertyText(property: Property): String? =
 private fun Property.parameter(name: String): String? =
     getParameter<Parameter>(name).map { it.value }.orElse(null)?.takeIf { it.isNotBlank() }
 
-private fun Component.stringProperty(name: String): String? =
+internal fun Component.stringProperty(name: String): String? =
     getProperty<Property>(name).map { propertyText(it) }.orElse(null)
 
 private fun Component.stringProperties(name: String): List<String> =
     getProperties<Property>(name).mapNotNull { propertyText(it) }
 
 /** A single-valued date property, with the zone it names. */
-private fun Component.dateProperty(name: String): IcalDate? {
+internal fun Component.dateProperty(name: String): IcalDate? {
     val property = getProperty<Property>(name).orElse(null) ?: return null
     val value = propertyText(property) ?: return null
     return IcalDate(value.trim(), property.parameter(Parameter.TZID))

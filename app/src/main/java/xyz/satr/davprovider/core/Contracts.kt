@@ -40,6 +40,14 @@ data class DavCollection(
      * the Collections a user had to paste a URL for, which are the ones a server does not publish.
      */
     val pinned: Boolean = false,
+    /**
+     * True when an edit made on the phone may be sent to the server for this Collection.
+     *
+     * Default false: the spec of record promised read-only, and an upgrade must not begin writing
+     * to a server nobody asked it to write to. Neither `supportsUploading` nor `<EditSchema>` can
+     * be told about one Collection, so this is what the engine enforces per Collection.
+     */
+    val writable: Boolean = false,
 )
 
 /**
@@ -310,6 +318,67 @@ interface ProviderMapper {
     /** Only ever called with a listing that completed. */
     fun deleteMissing(account: Account, collection: DavCollection, keepHrefs: Set<String>): Int
 
-    /** Read-only backstop: clear DIRTY and re-apply server state. */
-    fun clearDirty(account: Account, collection: DavCollection)
+    /**
+     * Refreshes what the provider shows for the Collection itself — the calendar's access level,
+     * which is how a read-only Collection is expressed to the stock Calendar app.
+     *
+     * Called at the start of every Collection, because a Collection whose CTag never moves would
+     * otherwise never learn that the user changed the setting.
+     */
+    fun ensureCollection(account: Account, collection: DavCollection)
+
+    /** Rows of this Collection awaiting upload: deletions first, then creates, then updates. */
+    fun pendingChanges(account: Account, collection: DavCollection): List<LocalChange>
+
+    /**
+     * The resource's bytes, or null when they cannot be produced.
+     *
+     * A [ChangeKind.CREATE] with no UID mints one and persists it before returning, so a retry
+     * after a lost answer sends the same name rather than a duplicate.
+     */
+    fun serialize(account: Account, collection: DavCollection, change: LocalChange): UploadBody?
+
+    /**
+     * Stores identity, ETag and `DIRTY=0` in one operation, after the server answered 2xx.
+     *
+     * Returns false when the row moved since [change] was read: the edit that arrived during the
+     * request is still pending, so the row stays dirty and the next run sends it. This is the one
+     * place a dirty flag may be cleared — a row cleared without an answer is an edit thrown away.
+     */
+    fun markUploaded(
+        account: Account,
+        collection: DavCollection,
+        change: LocalChange,
+        key: String,
+        uid: String,
+        etag: String?,
+        body: String,
+    ): Boolean
+
+    /** Really deletes a tombstone the server has accepted, and everything hanging off it. */
+    fun purgeDeleted(account: Account, collection: DavCollection, change: LocalChange)
+
+    /**
+     * `DELETED=0`, `DIRTY=0`, ETag null on every row of the resource: the local edit is given up
+     * and the row now waits for the server's version, which this same run fetches onto it.
+     */
+    fun revertLocalChange(account: Account, collection: DavCollection, change: LocalChange)
 }
+
+enum class ChangeKind { CREATE, UPDATE, DELETE }
+
+/** One row awaiting upload, as the provider held it when step U began. */
+data class LocalChange(
+    /** `RawContacts._ID` or the master `Events._ID`. */
+    val rowId: Long,
+    val kind: ChangeKind,
+    /** The resource name this row was last stored under; null for a create. */
+    val key: String? = null,
+    val etag: String? = null,
+    val uid: String? = null,
+    /** `RawContacts.VERSION`, which guards the clear; null where the provider keeps no counter. */
+    val version: Long? = null,
+)
+
+/** The bytes of one resource, and the UID they carry — already persisted on the row. */
+data class UploadBody(val text: String, val uid: String)

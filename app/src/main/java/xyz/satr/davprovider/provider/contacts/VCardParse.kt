@@ -1,6 +1,5 @@
 package xyz.satr.davprovider.provider.contacts
 
-import android.content.ContentValues
 import android.provider.ContactsContract.CommonDataKinds.Email
 import android.provider.ContactsContract.CommonDataKinds.Event
 import android.provider.ContactsContract.CommonDataKinds.Nickname
@@ -35,15 +34,33 @@ import java.time.ZonedDateTime
 import java.util.Locale
 import ezvcard.property.Email as EzEmail
 import ezvcard.property.Nickname as EzNickname
-import ezvcard.property.Note as EzNote
 import ezvcard.property.Organization as EzOrganization
 import ezvcard.property.Photo as EzPhoto
 import ezvcard.property.StructuredName as EzStructuredName
 import ezvcard.property.Title as EzTitle
 import ezvcard.property.Url as EzUrl
 
-/** One `Data` row: the MIME type of a data kind plus the columns of that kind. */
-internal class DataRow(val mimeType: String, val values: ContentValues)
+/**
+ * One `Data` row: the data kind's MIME type, the columns of that kind, and the handle of the source
+ * property it was derived from.
+ *
+ * Column values are text because both sides of the write path can produce them as text — a cursor
+ * returns `getString` for a column of any type, and the mapping writes the same spelling — which is
+ * what lets a row the phone holds be compared with one derived from a vCard (`VCardPatch.kt`). No
+ * `ContentValues`: the unit tests are plain JVM and an `android.jar` stub throws.
+ */
+internal class DataRow(
+    val mimeType: String,
+    val values: Map<String, String?>,
+    /**
+     * `<PROPERTY>:<ordinal>` of the source property this row came from — `TEL:1`, `NICKNAME:0/2` — or
+     * null for a class a vCard holds once (the name, the organisation). The write path stores it in
+     * `Data.SYNC1`, and a property is dropped only when the source derived a row from it and no
+     * current row carries that row's handle.
+     */
+    val handle: String? = null,
+)
+
 
 /** Where a vCard's `PHOTO` is: bytes it carries, or a reference that would need the network. */
 internal sealed interface PhotoSource {
@@ -82,34 +99,33 @@ internal class ParsedVCard(
  * next run is offered it again: an item that arrives damaged is retried rather than accepted as
  * empty, which is what would destroy it on the server's side of any future upload.
  */
-internal fun parseVCard(text: String): ParsedVCard? {
-    val vcard: VCard = try {
-        Ezvcard.parse(text).first() ?: return null
-    } catch (e: RuntimeException) {
-        // ez-vcard reports malformed input as unchecked exceptions of several unrelated types.
-        Log.w(LOG_TAG, "Unparseable vCard", e)
-        return null
-    }
-    return mapVCard(vcard)
+internal fun parseVCard(text: String): ParsedVCard? = readVCard(text)?.let { mapVCard(it) }
+
+/**
+ * The parsed object, or null when [text] is not a vCard at all.
+ *
+ * Separate from [parseVCard] because the write path needs the object itself: an upload is the stored
+ * text patched, not a new vCard built from its mapping.
+ */
+internal fun readVCard(text: String): VCard? = try {
+    Ezvcard.parse(text).first()
+} catch (e: RuntimeException) {
+    // ez-vcard reports malformed input as unchecked exceptions of several unrelated types.
+    Log.w(LOG_TAG, "Unparseable vCard", e)
+    null
 }
 
-private fun mapVCard(vcard: VCard): ParsedVCard {
+internal fun mapVCard(vcard: VCard): ParsedVCard {
     var uid: String? = null
     var kind: String? = null
     var formattedName: String? = null
     var structuredName: EzStructuredName? = null
     var organization: EzOrganization? = null
     var photo: PhotoSource? = null
-    val telephones = ArrayList<Telephone>()
-    val emails = ArrayList<EzEmail>()
-    val addresses = ArrayList<Address>()
-    val notes = ArrayList<EzNote>()
-    val websites = ArrayList<EzUrl>()
-    val nicknames = ArrayList<EzNickname>()
     val titles = ArrayList<EzTitle>()
-    val birthdays = ArrayList<Birthday>()
     val categories = ArrayList<String>()
     val members = ArrayList<String>()
+    val phonetics = HashMap<String, String>()
     var unmapped = 0
 
     for (property in vcard.properties) {
@@ -118,15 +134,8 @@ private fun mapVCard(vcard: VCard): ParsedVCard {
             is FormattedName -> if (formattedName == null) formattedName = property.value
             is Kind -> kind = property.value
             is Uid -> uid = property.value
-            is Telephone -> telephones += property
-            is EzEmail -> emails += property
-            is Address -> addresses += property
             is EzOrganization -> if (organization == null) organization = property
             is EzTitle -> titles += property
-            is EzNote -> notes += property
-            is EzUrl -> websites += property
-            is EzNickname -> nicknames += property
-            is Birthday -> birthdays += property
             is Categories -> categories += property.values.filter { it.isNotBlank() }
             is EzPhoto -> if (photo == null) photo = photoSource(property)
             is RawProperty -> when (property.propertyName.uppercase(Locale.ROOT)) {
@@ -135,6 +144,12 @@ private fun mapVCard(vcard: VCard): ParsedVCard {
                     if (property.value.equals(Kind.GROUP, ignoreCase = true)) kind = Kind.GROUP
                 // Members are UID references; CATEGORIES on each member is the other half of it.
                 "X-ADDRESSBOOKSERVER-MEMBER" -> property.value?.let { members += memberUid(it) }
+                // Android's phonetic-name fields, which DAVx5 and the platform's own vCard writer
+                // both spell this way. Without a column of their own they would be written, then
+                // dropped by the next sync, then deleted from the vCard by the next edit.
+                "X-PHONETIC-FIRST-NAME" -> property.value?.let { phonetics[StructuredName.PHONETIC_GIVEN_NAME] = it }
+                "X-PHONETIC-MIDDLE-NAME" -> property.value?.let { phonetics[StructuredName.PHONETIC_MIDDLE_NAME] = it }
+                "X-PHONETIC-LAST-NAME" -> property.value?.let { phonetics[StructuredName.PHONETIC_FAMILY_NAME] = it }
                 else -> unmapped++
             }
             // Bookkeeping, carried either by the verbatim copy or by an identity column: no loss.
@@ -146,34 +161,49 @@ private fun mapVCard(vcard: VCard): ParsedVCard {
     val rows = ArrayList<DataRow>()
 
     // N fills the name components, and FN fills the display name only when Android cannot derive it
-    // from those components — deriving is what gives the contact its sort key and name style.
+    // from those components — deriving is what gives the contact its sort key and name style. The
+    // phonetic columns are this row's too, so a card that carries only phonetics still gets one.
     val name = structuredName
-    if (name != null) {
-        rows += structuredNameRow(name, formattedName)
+    if (name != null || phonetics.isNotEmpty()) {
+        rows += structuredNameRow(name, formattedName, phonetics)
     } else if (!formattedName.isNullOrBlank()) {
         // No N at all: without a display name the contact has no name any editor can show.
-        rows += structuredNameRow(null, formattedName)
+        rows += structuredNameRow(null, formattedName, phonetics)
     }
 
-    for (nickname in nicknames) {
-        rows += textRows(Nickname.CONTENT_ITEM_TYPE, Nickname.NAME, nickname.values)
+    // A handle is the position of the property among the properties of its own name, which is what
+    // makes it stable: the same text always yields the same handles, so a row carrying one is a row
+    // the current source still spells the same way.
+    vcard.getProperties(EzNickname::class.java).forEachIndexed { index, nickname ->
+        nickname.values.forEachIndexed { valueIndex, value ->
+            if (value.isNullOrBlank()) return@forEachIndexed
+            rows += DataRow(
+                Nickname.CONTENT_ITEM_TYPE,
+                mapOf(Nickname.NAME to value),
+                "NICKNAME:$index/$valueIndex",
+            )
+        }
     }
-    for (telephone in telephones) {
-        phoneRow(telephone)?.let { rows += it }
+    vcard.telephoneNumbers.forEachIndexed { index, telephone ->
+        phoneRow(telephone, "TEL:$index")?.let { rows += it }
     }
-    for (email in emails) {
-        emailRow(email)?.let { rows += it }
+    vcard.emails.forEachIndexed { index, email ->
+        emailRow(email, "EMAIL:$index")?.let { rows += it }
     }
-    for (address in addresses) {
-        addressRow(address)?.let { rows += it }
+    vcard.addresses.forEachIndexed { index, address ->
+        addressRow(address, "ADR:$index")?.let { rows += it }
     }
     organizationRow(organization, titles)?.let { rows += it }
-    rows += textRows(Note.CONTENT_ITEM_TYPE, Note.NOTE, notes.map { it.value })
-    for (website in websites) {
-        websiteRow(website)?.let { rows += it }
+    vcard.notes.forEachIndexed { index, note ->
+        note.value?.takeIf { it.isNotBlank() }?.let {
+            rows += DataRow(Note.CONTENT_ITEM_TYPE, mapOf(Note.NOTE to it), "NOTE:$index")
+        }
     }
-    for (birthday in birthdays) {
-        birthdayRow(birthday)?.let { rows += it }
+    vcard.urls.forEachIndexed { index, website ->
+        websiteRow(website, "URL:$index")?.let { rows += it }
+    }
+    vcard.birthdays.forEachIndexed { index, birthday ->
+        birthdayRow(birthday, "BDAY:$index")?.let { rows += it }
     }
 
     return ParsedVCard(
@@ -194,18 +224,23 @@ private fun mapVCard(vcard: VCard): ParsedVCard {
  * Leaving the display name out is not a loss: the provider joins the components itself and records
  * the name style it guessed from them.
  */
-private fun structuredNameRow(name: EzStructuredName?, formattedName: String?): DataRow {
-    val values = ContentValues()
+private fun structuredNameRow(
+    name: EzStructuredName?,
+    formattedName: String?,
+    phonetics: Map<String, String>,
+): DataRow {
+    val values = LinkedHashMap<String, String?>()
     if (name != null) {
-        name.given?.takeIf { it.isNotBlank() }?.let { values.put(StructuredName.GIVEN_NAME, it) }
-        name.family?.takeIf { it.isNotBlank() }?.let { values.put(StructuredName.FAMILY_NAME, it) }
-        joined(name.prefixes)?.let { values.put(StructuredName.PREFIX, it) }
-        joined(name.additionalNames)?.let { values.put(StructuredName.MIDDLE_NAME, it) }
-        joined(name.suffixes)?.let { values.put(StructuredName.SUFFIX, it) }
+        name.given?.takeIf { it.isNotBlank() }?.let { values[StructuredName.GIVEN_NAME] = it }
+        name.family?.takeIf { it.isNotBlank() }?.let { values[StructuredName.FAMILY_NAME] = it }
+        joined(name.prefixes)?.let { values[StructuredName.PREFIX] = it }
+        joined(name.additionalNames)?.let { values[StructuredName.MIDDLE_NAME] = it }
+        joined(name.suffixes)?.let { values[StructuredName.SUFFIX] = it }
     }
     if (!formattedName.isNullOrBlank() && !derivesDisplayName(name, formattedName)) {
-        values.put(StructuredName.DISPLAY_NAME, formattedName)
+        values[StructuredName.DISPLAY_NAME] = formattedName
     }
+    values.putAll(phonetics)
     return DataRow(StructuredName.CONTENT_ITEM_TYPE, values)
 }
 
@@ -230,57 +265,58 @@ private fun joinedName(name: EzStructuredName?): String? {
  * Compares names the way a reader would: punctuation and capitalisation a server added to `FN` are
  * not a reason to override the components it also sent.
  */
-private fun nameKey(value: String): String =
+internal fun nameKey(value: String): String =
     value.lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
 
 private fun joined(parts: List<String?>): String? =
     parts.filterNotNull().filter { it.isNotBlank() }.joinToString(" ").takeIf { it.isNotEmpty() }
 
-private fun textRows(mimeType: String, column: String, values: List<String?>): List<DataRow> =
-    values.filterNotNull().filter { it.isNotBlank() }.map { value ->
-        DataRow(mimeType, ContentValues().apply { put(column, value) })
-    }
-
-private fun phoneRow(telephone: Telephone): DataRow? {
+private fun phoneRow(telephone: Telephone, handle: String): DataRow? {
     val number = telephone.text?.takeIf { it.isNotBlank() }
         ?: telephone.uri?.number?.takeIf { it.isNotBlank() }
         ?: return null
     val spec = phoneType(telephone.types)
-    val values = ContentValues().apply {
-        put(Phone.NUMBER, number)
-        put(Phone.TYPE, spec.type)
-        spec.label?.let { put(Phone.LABEL, it) }
-    }
-    return DataRow(Phone.CONTENT_ITEM_TYPE, values)
+    return DataRow(
+        Phone.CONTENT_ITEM_TYPE,
+        buildMap {
+            put(Phone.NUMBER, number)
+            put(Phone.TYPE, spec.type.toString())
+            spec.label?.let { put(Phone.LABEL, it) }
+        },
+        handle,
+    )
 }
 
-private fun emailRow(email: EzEmail): DataRow? {
+private fun emailRow(email: EzEmail, handle: String): DataRow? {
     val address = email.value?.takeIf { it.isNotBlank() } ?: return null
     val spec = emailType(email.types)
-    val values = ContentValues().apply {
-        put(Email.ADDRESS, address)
-        put(Email.TYPE, spec.type)
-        spec.label?.let { put(Email.LABEL, it) }
-    }
-    return DataRow(Email.CONTENT_ITEM_TYPE, values)
+    return DataRow(
+        Email.CONTENT_ITEM_TYPE,
+        buildMap {
+            put(Email.ADDRESS, address)
+            put(Email.TYPE, spec.type.toString())
+            spec.label?.let { put(Email.LABEL, it) }
+        },
+        handle,
+    )
 }
 
-private fun addressRow(address: Address): DataRow? {
-    val values = ContentValues()
-    address.poBox?.takeIf { it.isNotBlank() }?.let { values.put(StructuredPostal.POBOX, it) }
+private fun addressRow(address: Address, handle: String): DataRow? {
+    val values = LinkedHashMap<String, String?>()
+    address.poBox?.takeIf { it.isNotBlank() }?.let { values[StructuredPostal.POBOX] = it }
     joined(listOf(address.extendedAddressFull, address.streetAddressFull))
-        ?.let { values.put(StructuredPostal.STREET, it) }
-    address.locality?.takeIf { it.isNotBlank() }?.let { values.put(StructuredPostal.CITY, it) }
-    address.region?.takeIf { it.isNotBlank() }?.let { values.put(StructuredPostal.REGION, it) }
-    address.postalCode?.takeIf { it.isNotBlank() }?.let { values.put(StructuredPostal.POSTCODE, it) }
-    address.country?.takeIf { it.isNotBlank() }?.let { values.put(StructuredPostal.COUNTRY, it) }
+        ?.let { values[StructuredPostal.STREET] = it }
+    address.locality?.takeIf { it.isNotBlank() }?.let { values[StructuredPostal.CITY] = it }
+    address.region?.takeIf { it.isNotBlank() }?.let { values[StructuredPostal.REGION] = it }
+    address.postalCode?.takeIf { it.isNotBlank() }?.let { values[StructuredPostal.POSTCODE] = it }
+    address.country?.takeIf { it.isNotBlank() }?.let { values[StructuredPostal.COUNTRY] = it }
     // The server's own `LABEL`, when it sent one: it knows how the address is written locally.
-    address.label?.takeIf { it.isNotBlank() }?.let { values.put(StructuredPostal.FORMATTED_ADDRESS, it) }
-    if (values.size() == 0) return null
+    address.label?.takeIf { it.isNotBlank() }?.let { values[StructuredPostal.FORMATTED_ADDRESS] = it }
+    if (values.isEmpty()) return null
     val spec = addressType(address.types)
-    values.put(StructuredPostal.TYPE, spec.type)
-    spec.label?.let { values.put(StructuredPostal.LABEL, it) }
-    return DataRow(StructuredPostal.CONTENT_ITEM_TYPE, values)
+    values[StructuredPostal.TYPE] = spec.type.toString()
+    spec.label?.let { values[StructuredPostal.LABEL] = it }
+    return DataRow(StructuredPostal.CONTENT_ITEM_TYPE, values, handle)
 }
 
 /**
@@ -289,34 +325,37 @@ private fun addressRow(address: Address): DataRow? {
  * sits — and a `TITLE` with no `ORG` at all still deserves a row of its own.
  */
 private fun organizationRow(organization: EzOrganization?, titles: List<EzTitle>): DataRow? {
-    val values = ContentValues()
+    val values = LinkedHashMap<String, String?>()
     organization?.values?.let { levels ->
-        levels.getOrNull(0)?.takeIf { it.isNotBlank() }?.let { values.put(Organization.COMPANY, it) }
-        joined(levels.drop(1))?.let { values.put(Organization.DEPARTMENT, it) }
+        levels.getOrNull(0)?.takeIf { it.isNotBlank() }?.let { values[Organization.COMPANY] = it }
+        joined(levels.drop(1))?.let { values[Organization.DEPARTMENT] = it }
     }
-    joined(titles.map { it.value })?.let { values.put(Organization.TITLE, it) }
-    if (values.size() == 0) return null
+    joined(titles.map { it.value })?.let { values[Organization.TITLE] = it }
+    if (values.isEmpty()) return null
     return DataRow(Organization.CONTENT_ITEM_TYPE, values)
 }
 
-private fun websiteRow(url: EzUrl): DataRow? {
+private fun websiteRow(url: EzUrl, handle: String): DataRow? {
     val value = url.value?.takeIf { it.isNotBlank() } ?: return null
     val spec = websiteType(url)
-    val values = ContentValues().apply {
-        put(Website.URL, value)
-        put(Website.TYPE, spec.type)
-        spec.label?.let { put(Website.LABEL, it) }
-    }
-    return DataRow(Website.CONTENT_ITEM_TYPE, values)
+    return DataRow(
+        Website.CONTENT_ITEM_TYPE,
+        buildMap {
+            put(Website.URL, value)
+            put(Website.TYPE, spec.type.toString())
+            spec.label?.let { put(Website.LABEL, it) }
+        },
+        handle,
+    )
 }
 
-private fun birthdayRow(birthday: Birthday): DataRow? {
+private fun birthdayRow(birthday: Birthday, handle: String): DataRow? {
     val startDate = startDate(birthday) ?: return null
-    val values = ContentValues().apply {
-        put(Event.START_DATE, startDate)
-        put(Event.TYPE, Event.TYPE_BIRTHDAY)
-    }
-    return DataRow(Event.CONTENT_ITEM_TYPE, values)
+    return DataRow(
+        Event.CONTENT_ITEM_TYPE,
+        mapOf(Event.START_DATE to startDate, Event.TYPE to Event.TYPE_BIRTHDAY.toString()),
+        handle,
+    )
 }
 
 private fun photoSource(photo: EzPhoto): PhotoSource? = when {
@@ -325,6 +364,9 @@ private fun photoSource(photo: EzPhoto): PhotoSource? = when {
     else -> null
 }
 
+/** Apple's parameter for a birthday with no year: the placeholder year is not the year. */
+private const val OMIT_YEAR = "X-APPLE-OMIT-YEAR"
+
 /**
  * The birth date in the form the provider stores dates in: `yyyy-MM-dd`, or `--MM-dd` when the vCard
  * has no year. Anything else about the value is not representable, and is counted instead of
@@ -332,7 +374,14 @@ private fun photoSource(photo: EzPhoto): PhotoSource? = when {
  */
 private fun startDate(birthday: Birthday): String? {
     birthday.partialDate?.let { return partialDateValue(it) }
-    when (val date = birthday.date) {
+    val date = birthday.date
+    // Apple's spelling of a year-less birthday, which the platform's own vCard writer produces too: a
+    // placeholder year that the parameter says means nothing. Read as a real date it would put the
+    // contact's birthday in the year 1604.
+    if (date is LocalDate && birthday.getParameter(OMIT_YEAR) == date.year.toString()) {
+        return String.format(Locale.ROOT, "--%02d-%02d", date.monthValue, date.dayOfMonth)
+    }
+    when (date) {
         is LocalDate -> return date.toString()
         is LocalDateTime -> return date.toLocalDate().toString()
         is OffsetDateTime -> return date.toLocalDate().toString()

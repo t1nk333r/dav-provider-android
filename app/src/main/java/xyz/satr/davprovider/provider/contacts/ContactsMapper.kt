@@ -8,21 +8,32 @@ import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.database.Cursor
 import android.net.Uri
 import android.provider.BaseColumns
 import android.provider.ContactsContract
+import android.provider.ContactsContract.CommonDataKinds.Email
+import android.provider.ContactsContract.CommonDataKinds.Event
 import android.provider.ContactsContract.CommonDataKinds.GroupMembership
+import android.provider.ContactsContract.CommonDataKinds.Phone
 import android.provider.ContactsContract.CommonDataKinds.Photo
+import android.provider.ContactsContract.CommonDataKinds.StructuredPostal
+import android.provider.ContactsContract.CommonDataKinds.Website
 import android.provider.ContactsContract.Data
 import android.provider.ContactsContract.DisplayPhoto
 import android.provider.ContactsContract.Groups
 import android.provider.ContactsContract.RawContacts
 import android.provider.ContactsContract.SyncState
 import android.util.Log
+import java.time.Instant
 import java.util.Locale
+import java.util.UUID
+import xyz.satr.davprovider.core.ChangeKind
 import xyz.satr.davprovider.core.CollectionState
 import xyz.satr.davprovider.core.DavCollection
+import xyz.satr.davprovider.core.LocalChange
 import xyz.satr.davprovider.core.ProviderMapper
+import xyz.satr.davprovider.core.UploadBody
 
 /**
  * Writes one Account's address books into `ContactsContract`.
@@ -32,12 +43,14 @@ import xyz.satr.davprovider.core.ProviderMapper
  * `SYNC3` carries the Collection id, which is what scopes every lookup, diff and delete in this
  * class to the one address book the call is about: an Account spans many Collections.
  *
- * v1 is read-only, so a write re-applies what the server says and nothing else: an item's rows are
- * replaced wholesale rather than merged, which is also what lets [clearDirty]'s `DIRTY` reset hold —
- * a row that still carried a local edit would be re-dirtied the moment it is touched.
+ * Both directions are live. A write from the server replaces an item's rows wholesale, which is why a
+ * fetched row is written `DIRTY=0`; a write from the phone is serialised by [patchContact] from the
+ * item's own stored vCard, and `DIRTY` returns to 0 in exactly one place — [markUploaded], after the
+ * server has answered the `PUT`. Nothing else may clear it: a row cleared without an answer is an
+ * edit thrown away.
  *
  * @param photoFetcher used for `PHOTO;VALUE=uri`, and only for a URL that is on the Collection's own
- *   Origin. Left null, such photos are skipped and counted, which is what v1 does.
+ *   Origin. Left null, such photos are skipped and counted.
  */
 class ContactsMapper(
     context: Context,
@@ -146,8 +159,12 @@ class ContactsMapper(
         // may point at a contact that does not exist yet.
         val writtenContacts = ArrayList<Pair<Resource, RowRef>>()
         val contactsByUid = HashMap<String, RowRef>()
+        val photoContacts = ArrayList<RowRef>()
         for (resource in contacts) {
-            val ref = appendContact(account, collection, resource, etags[resource.key], dataUri, rawContactsUri, batch, stats, known)
+            val ref = appendContact(
+                account, collection, resource, etags[resource.key], dataUri, rawContactsUri, batch, stats, known,
+                photoContacts,
+            ) ?: continue
             writtenContacts += resource to ref
             resource.parsed.uid?.let { contactsByUid[it] = ref }
         }
@@ -179,8 +196,10 @@ class ContactsMapper(
         // A group vCard names its members by UID, which is the other direction of the same relation.
         for ((resource, group) in writtenGroups) {
             for (uid in resource.parsed.members) {
+                // A contact whose own edit is still pending is not a row to add a membership to: the
+                // next run resolves it once the flag is gone.
                 val contact = contactsByUid[uid]
-                    ?: known.contactIdsByUid[uid]?.let { RowRef.existing(it) }
+                    ?: known.contactIdsByUid[uid]?.takeIf { !it.pending }?.let { RowRef.existing(it.id) }
                 if (contact == null) {
                     unresolved += DeferredMembership(MEMBERSHIP_FROM_GROUP, contactUid = uid, group = group)
                     continue
@@ -205,6 +224,11 @@ class ContactsMapper(
         assertAccountRegistered(account)
         val results = resolver.applyBatch(authority, batch)
 
+        // Pass 2a: the photo rows this batch wrote now have a version the provider gave them, and that
+        // version is what the next upload compares against to tell a photo the user changed from one
+        // the source already carries (`VCardPatch.PhotoEdit`).
+        refreshPhotoBaselines(account, photoContacts.mapNotNull { resolveId(it, results) })
+
         // Pass 3: memberships whose other end this batch never named. Both ends can arrive in any
         // order across batches, and a batch sees everything the run wrote before it: whatever is not
         // in [known] either does not exist, in which case the next run resolves it once it does, or is
@@ -212,7 +236,7 @@ class ContactsMapper(
         val reconciliation = ArrayList<ContentProviderOperation>()
         for (membership in unresolved) {
             val contactId = membership.contact?.let { resolveId(it, results) }
-                ?: membership.contactUid?.let { known.contactIdsByUid[it] }
+                ?: membership.contactUid?.let { known.contactIdsByUid[it]?.takeIf { known -> !known.pending }?.id }
             val groupId = membership.group?.let { resolveId(it, results) }
                 ?: membership.groupTitle?.let { known.groupIdsByTitle[it] }
             if (contactId == null || groupId == null) {
@@ -241,11 +265,15 @@ class ContactsMapper(
         // The caller contract is that this only ever runs against a listing that completed; the
         // mapper's own part in that is scoping every delete to this Account and this Collection, so
         // a short listing can never reach another address book's rows.
+        //
+        // `DIRTY=0` is the other part: a row the user is still editing is not one the server has been
+        // asked about, and a listing that does not name it says nothing about an edit nobody sent yet.
+        // It is deleted by a later run, once its upload has been answered or reverted.
         val staleContacts = ArrayList<Long>()
         resolver.query(
             RawContacts.CONTENT_URI.forSyncAdapter(account),
             arrayOf(RawContacts._ID, RawContacts.SOURCE_ID),
-            contactSelection(),
+            "${contactSelection()} AND ${RawContacts.DIRTY}=0",
             collectionArgs(account, collection),
             null,
         )?.use { cursor ->
@@ -280,27 +308,435 @@ class ContactsMapper(
         return deleted
     }
 
-    override fun clearDirty(account: Account, collection: DavCollection) {
+    override fun ensureCollection(account: Account, collection: DavCollection) {
+        // Nothing to refresh, and that is the whole implementation: whether an address book may be
+        // written is not something the stock Contacts app can be told per Collection —
+        // `res/xml/contacts.xml` declares the account type's editable kinds once for all of them — so
+        // a read-only Collection is enforced by the engine, which reverts what step U finds for it,
+        // rather than expressed here the way a calendar's access level is.
+    }
+
+    override fun pendingChanges(account: Account, collection: DavCollection): List<LocalChange> {
         assertAccountRegistered(account)
-        // Stock editors honour supportsUploading="false" and never write, but nothing stops a
-        // third-party one from editing a row anyway. Clearing DIRTY stops the framework from trying
-        // to upload an edit this app has no path to send, and the next upsert puts the server's
-        // version back — which is what makes such an edit visibly revert instead of lingering.
+        // Deletions first, then creates, then updates. A deletion goes first so that a contact deleted
+        // and added again does not meet its own old href on the server; creates before updates so that
+        // nothing an update refers to is missing when it is sent.
+        return pendingRows(
+            account,
+            kind = ChangeKind.DELETE,
+            selection = collectionSelection(PENDING_DELETES),
+            args = collectionArgs(account, collection),
+        ) + pendingRows(
+            account,
+            kind = ChangeKind.CREATE,
+            // A contact made in the stock app names an Account, not one of its address books, so the
+            // row has no SYNC3 until its first upload adopts it: it is the Account's to send, and the
+            // engine asks for it through the default address book.
+            selection = accountSelection(PENDING_CREATES),
+            args = accountArgs(account),
+        ) + pendingRows(
+            account,
+            kind = ChangeKind.UPDATE,
+            selection = collectionSelection(PENDING_UPDATES),
+            args = collectionArgs(account, collection),
+        )
+    }
+
+    override fun serialize(account: Account, collection: DavCollection, change: LocalChange): UploadBody? {
+        assertAccountRegistered(account)
+        // A tombstone has no bytes: the engine sends DELETE against change.key, and only asks for a
+        // body for a create or an edit.
+        if (change.kind == ChangeKind.DELETE) return null
+
+        val uid = change.uid ?: if (change.kind == ChangeKind.CREATE) mintUid(account, change.rowId) else null
+        val bytes = patchContact(
+            source = verbatimText(account, change.rowId),
+            rows = dataRows(account, change.rowId),
+            photo = photoEdit(account, change.rowId),
+            categories = categoryEdit(account, collection, change.rowId),
+            newUid = uid,
+            now = Instant.now(),
+        )
+        if (bytes == null) {
+            // The row keeps its copy, so the next run is offered the same edit; uploading from the rows
+            // alone would send a vCard without everything the copy is holding.
+            Log.w(LOG_TAG, "${collection.id}: contact ${change.rowId} does not parse, leaving it for the next run")
+            return null
+        }
+        return UploadBody(bytes.text, bytes.uid.orEmpty())
+    }
+
+    override fun markUploaded(
+        account: Account,
+        collection: DavCollection,
+        change: LocalChange,
+        key: String,
+        uid: String,
+        etag: String?,
+        body: String,
+    ): Boolean {
+        assertAccountRegistered(account)
+        val rawContactsUri = RawContacts.CONTENT_URI.forSyncAdapter(account)
+        val identity = ContentValues().apply {
+            put(RawContacts.SOURCE_ID, key)
+            // A source its own vCard gave no UID has none here either, and null says that better than
+            // an empty string would.
+            if (uid.isNotBlank()) put(RawContacts.SYNC1, uid) else putNull(RawContacts.SYNC1)
+            if (etag != null) put(RawContacts.SYNC2, etag) else putNull(RawContacts.SYNC2)
+            put(RawContacts.SYNC3, collection.id)
+        }
+        // The identity and the ETag are not a claim about the row's state, so they are written
+        // unconditionally: the server does hold this body under this name, and the next run's
+        // `If-Match` has to be conditioned on what it actually holds. Storing them even when the row
+        // moved is also what keeps a created contact from being fetched back as a second row: without
+        // an href of its own, the listing's copy of the body just PUT would insert one.
+        resolver.update(rawContactsUri, identity, "${RawContacts._ID}=?", arrayOf(change.rowId.toString()))
+
+        // `DIRTY` is the claim that the row is what the server holds, and only a row that did not move
+        // since it was serialised may make it. Zero rows affected means the user edited during the
+        // PUT: the edit is still pending and the next run sends it under the ETag stored above.
+        val cleared = resolver.update(
+            rawContactsUri,
+            ContentValues().apply { put(RawContacts.DIRTY, 0) },
+            change.version?.let { "${RawContacts._ID}=? AND ${RawContacts.VERSION}=?" }
+                ?: "${RawContacts._ID}=?",
+            change.version?.let { arrayOf(change.rowId.toString(), it.toString()) }
+                ?: arrayOf(change.rowId.toString()),
+        )
+        if (cleared == 0) {
+            Log.w(
+                LOG_TAG,
+                "${collection.id}: contact ${change.rowId} changed while it was uploaded, " +
+                    "keeping the edit pending for the next run",
+            )
+            return false
+        }
+
+        // The row is now what the server holds, so the copy it keeps must be too: the next edit is
+        // patched onto these bytes, and the rows beside them are re-derived so that they carry the
+        // handles this text yields. Without that, a row the editor inserted would go on looking like a
+        // property nothing in the source matches, and its parameters would be rebuilt from columns on
+        // every edit after this one.
+        rebaseline(account, collection, change.rowId, key, body)
+        return true
+    }
+
+    override fun purgeDeleted(account: Account, collection: DavCollection, change: LocalChange) {
+        assertAccountRegistered(account)
+        // A real delete, not a tombstone: the sync-adapter URI is what makes the provider remove the
+        // row and, with it, everything hanging off it. The Account is repeated in the selection
+        // because a row created and deleted again before any run never reached a Collection, and an id
+        // from a raw contact of another Account is not this Account's to delete.
+        resolver.delete(
+            RawContacts.CONTENT_URI.forSyncAdapter(account),
+            "${RawContacts._ID}=? AND ${RawContacts.ACCOUNT_NAME}=? AND ${RawContacts.ACCOUNT_TYPE}=?",
+            arrayOf(change.rowId.toString(), account.name, account.type),
+        )
+    }
+
+    override fun revertLocalChange(account: Account, collection: DavCollection, change: LocalChange) {
+        assertAccountRegistered(account)
+        val values = ContentValues().apply {
+            put(RawContacts.DELETED, 0)
+            put(RawContacts.DIRTY, 0)
+            putNull(RawContacts.SYNC2)
+            // A create the server answered 412 to is a name that already exists — the lost answer to an
+            // earlier attempt of ours. Adopting it is what stops the next attempt from minting a second
+            // contact, and SYNC3 goes with it because a row with an href and no Collection is one no
+            // listing, diff or fetch of ours can see again.
+            if (change.key != null) {
+                put(RawContacts.SOURCE_ID, change.key)
+                put(RawContacts.SYNC3, collection.id)
+            }
+        }
+        // One request per resource, because a resource is one row here: a tombstone is the raw contact,
+        // and a locally created contact is a raw contact the provider will not delete.
         resolver.update(
             RawContacts.CONTENT_URI.forSyncAdapter(account),
-            ContentValues().apply { put(RawContacts.DIRTY, 0) },
-            contactSelection(),
-            collectionArgs(account, collection),
+            values,
+            "${RawContacts._ID}=?",
+            arrayOf(change.rowId.toString()),
         )
-        // A group can be renamed from the Contacts app just as a contact can be edited. The selection
-        // stays on columns the groups view and table share; the Account comes from the URI, which the
-        // provider turns into an account id — the groups table has no account name column of its own.
+    }
+
+    // ------------------------------------------------------------------ upload rows
+
+    /**
+     * The rows of one pending-edit flavour, as the engine hands them to `serialize`.
+     *
+     * `VERSION` comes along because it is what guards the clear: the value read here is compared
+     * against the row's at the moment the server answers, and a row that moved in between keeps its
+     * `DIRTY` flag.
+     */
+    private fun pendingRows(account: Account, kind: ChangeKind, selection: String, args: Array<String>): List<LocalChange> =
+        ArrayList<LocalChange>().also { changes ->
+            resolver.query(
+                RawContacts.CONTENT_URI.forSyncAdapter(account),
+                arrayOf(
+                    RawContacts._ID,
+                    RawContacts.SOURCE_ID,
+                    RawContacts.SYNC2,
+                    RawContacts.SYNC1,
+                    RawContacts.VERSION,
+                ),
+                selection,
+                args,
+                "${RawContacts._ID} ASC",
+            )?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    changes += LocalChange(
+                        rowId = cursor.getLong(0),
+                        kind = kind,
+                        key = cursor.getString(1),
+                        etag = cursor.getString(2),
+                        uid = cursor.getString(3),
+                        version = cursor.getLong(4),
+                    )
+                }
+            }
+        }
+
+    /**
+     * The UID for a contact made on the phone, minted once and stored before the first attempt.
+     *
+     * Stored first so that a `PUT` whose answer was lost is retried under the same name rather than
+     * making a second contact. Bare, not `urn:uuid:`: the read path stores a `UID` exactly as it was
+     * given and strips that prefix from a `MEMBER` reference, so either spelling resolves to this row.
+     */
+    private fun mintUid(account: Account, rowId: Long): String {
+        val uid = UUID.randomUUID().toString()
         resolver.update(
-            Groups.CONTENT_URI.forSyncAdapter(account),
-            ContentValues().apply { put(Groups.DIRTY, 0) },
-            "${Groups.SYNC3}=?",
-            arrayOf(collection.id),
+            RawContacts.CONTENT_URI.forSyncAdapter(account),
+            ContentValues().apply { put(RawContacts.SYNC1, uid) },
+            "${RawContacts._ID}=?",
+            arrayOf(rowId.toString()),
         )
+        return uid
+    }
+
+    /** The source vCard the row keeps, or null when it has none — a contact made on the phone. */
+    private fun verbatimText(account: Account, rowId: Long): String? =
+        resolver.query(
+            Data.CONTENT_URI.forSyncAdapter(account),
+            arrayOf(Data.DATA1),
+            "${Data.RAW_CONTACT_ID}=? AND ${Data.MIMETYPE}=?",
+            arrayOf(rowId.toString(), VCARD_MIME_TYPE),
+            null,
+        )?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+
+    /**
+     * The contact's rows as [patchContact] reads them: each kind's columns as text, and the handle of
+     * the source property the row came from (`Data.SYNC1`), which is what tells a property the user
+     * deleted from one the rows have never known about.
+     *
+     * Every `data` column is projected, null or not, because the patcher compares a row against what
+     * the source derived column by column: a column that is simply absent from the projection could
+     * not tell a value the user cleared from one that is not part of the kind.
+     */
+    private fun dataRows(account: Account, rowId: Long): List<DataRow> {
+        val rows = ArrayList<DataRow>()
+        resolver.query(
+            Data.CONTENT_URI.forSyncAdapter(account),
+            arrayOf(Data.MIMETYPE, Data.SYNC1) + DATA_COLUMNS,
+            "${Data.RAW_CONTACT_ID}=?",
+            arrayOf(rowId.toString()),
+            null,
+        )?.use { cursor ->
+            val indices = DATA_COLUMNS.map { cursor.getColumnIndexOrThrow(it) }
+            while (cursor.moveToNext()) {
+                val values = LinkedHashMap<String, String?>()
+                for ((position, column) in DATA_COLUMNS.withIndex()) {
+                    values[column] = cursor.getString(indices[position])
+                }
+                rows += DataRow(cursor.getString(0), values, cursor.getString(1))
+            }
+        }
+        return rows
+    }
+
+    /**
+     * What the contact's photo row says about `PHOTO`.
+     *
+     * "Unchanged" is `DATA_VERSION == SYNC2` — the snapshot [refreshPhotoBaselines] takes whenever a
+     * photo row is written — because the provider re-encodes an image it is given, so the row's bytes
+     * can never be compared with the ones the source carried. A row the editor has touched, or one
+     * without a snapshot, is rebuilt from the display photo.
+     */
+    private fun photoEdit(account: Account, rowId: Long): PhotoEdit {
+        var version: Long? = null
+        var snapshot: String? = null
+        resolver.query(
+            Data.CONTENT_URI.forSyncAdapter(account),
+            arrayOf(Data.DATA_VERSION, Data.SYNC2),
+            "${Data.RAW_CONTACT_ID}=? AND ${Data.MIMETYPE}=?",
+            arrayOf(rowId.toString(), Photo.CONTENT_ITEM_TYPE),
+            null,
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                version = cursor.getLong(0)
+                snapshot = cursor.getString(1)
+            }
+        }
+        // No row at all: the photo is gone, and so is the source's property.
+        if (version == null) return PhotoEdit.Dropped
+        if (snapshot != null && snapshot.toLongOrNull() == version) return PhotoEdit.Kept
+        val bytes = displayPhotoBytes(account, rowId)
+        if (bytes == null) {
+            // A photo this app cannot spell is not a reason to delete one the user did not touch.
+            Log.w(LOG_TAG, "contact $rowId: photo bytes are not readable, keeping the server's photo")
+            return PhotoEdit.Kept
+        }
+        return PhotoEdit.Rebuilt(bytes)
+    }
+
+    /**
+     * The bytes of the display photo, or null when there are none to read.
+     *
+     * The file the provider keeps for an image larger than a thumbnail first, because it is the one
+     * the user's editor wrote; the `DATA15` thumbnail second, because a photo the provider never
+     * promoted to a file is still a photo.
+     */
+    private fun displayPhotoBytes(account: Account, rowId: Long): ByteArray? {
+        val photoUri = RawContacts.CONTENT_URI.buildUpon()
+            .appendPath(rowId.toString())
+            .appendPath(RawContacts.DisplayPhoto.CONTENT_DIRECTORY)
+            .build()
+        val file = runCatching { resolver.openAssetFileDescriptor(photoUri.forSyncAdapter(account), "r") }
+            .getOrNull()
+        if (file != null) {
+            file.use { descriptor ->
+                runCatching { descriptor.createInputStream()?.use { it.readBytes() } }.getOrNull()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let { return it }
+            }
+        }
+        return resolver.query(
+            Data.CONTENT_URI.forSyncAdapter(account),
+            arrayOf(Photo.PHOTO),
+            "${Data.RAW_CONTACT_ID}=? AND ${Data.MIMETYPE}=?",
+            arrayOf(rowId.toString(), Photo.CONTENT_ITEM_TYPE),
+            null,
+        )?.use { cursor -> if (cursor.moveToFirst()) cursor.getBlob(0) else null }
+            ?.takeIf { it.isNotEmpty() }
+    }
+
+    /**
+     * What the contact's own membership rows say about `CATEGORIES`.
+     *
+     * The rows this app wrote from a group's member list are excluded: belonging to a group is that
+     * group's relation, not this contact's, and the group re-writes it when the group changes. What
+     * remains is the contact's own — the rows the editor inserts carry no provenance at all — resolved
+     * to the group titles a `CATEGORIES` value spells.
+     */
+    private fun categoryEdit(account: Account, collection: DavCollection, rowId: Long): CategoryEdit {
+        val groupIds = ArrayList<Long>()
+        resolver.query(
+            Data.CONTENT_URI.forSyncAdapter(account),
+            arrayOf(GroupMembership.GROUP_ROW_ID),
+            "${Data.RAW_CONTACT_ID}=? AND ${Data.MIMETYPE}=? AND (${Data.DATA2} IS NULL OR ${Data.DATA2}=?)",
+            arrayOf(rowId.toString(), GroupMembership.CONTENT_ITEM_TYPE, MEMBERSHIP_FROM_CATEGORIES),
+            null,
+        )?.use { cursor ->
+            while (cursor.moveToNext()) groupIds += cursor.getLong(0)
+        }
+        return CategoryEdit(
+            titles = groupTitles(account, collection, "${Groups._ID} IN (${groupIds.joinToString(",") { "?" }})", groupIds.map { it.toString() }),
+            // Every group title, not only the ones this contact belongs to: a source value naming a
+            // group that exists is one the read path resolved and showed the user, so its absence from
+            // the rows is a deletion — and a value naming no group is the one to preserve.
+            groupTitles = groupTitles(account, collection, null, emptyList()).toSet(),
+        )
+    }
+
+    /** The titles of the Collection's groups, optionally narrowed by [selection]. */
+    private fun groupTitles(
+        account: Account,
+        collection: DavCollection,
+        selection: String?,
+        args: List<String>,
+    ): List<String> {
+        if (selection != null && args.isEmpty()) return emptyList()
+        val titles = ArrayList<String>()
+        val scope = "${Groups.ACCOUNT_NAME}=? AND ${Groups.ACCOUNT_TYPE}=? AND ${Groups.SYNC3}=?"
+        val scopeArgs = collectionArgs(account, collection)
+        resolver.query(
+            Groups.CONTENT_URI.forSyncAdapter(account),
+            arrayOf(Groups.TITLE),
+            if (selection == null) scope else "$scope AND $selection",
+            if (selection == null) scopeArgs else scopeArgs + args,
+            null,
+        )?.use { cursor ->
+            while (cursor.moveToNext()) cursor.getString(0)?.takeIf { it.isNotBlank() }?.let { titles += it }
+        }
+        return titles
+    }
+
+    /**
+     * Rewrites the row's stored vCard to [body] and re-derives the rows beside it from the same text.
+     *
+     * Both halves are one batch, so the copy and the rows it describes commit together: a copy newer
+     * than its rows would make the next edit look like it deleted everything the rows no longer spell.
+     *
+     * Two kinds of row survive the replace. A photo row is kept, not re-derived: the sent `PHOTO` may
+     * be a link the read path fetched, which cannot be fetched back from here, and its bytes are what
+     * the user's editor wrote. A membership row is kept because the mapping does not derive one: the
+     * `CATEGORIES` the upload carried came from these rows, and re-deriving would either lose the ones
+     * the collection has no group for or delete the memberships outright.
+     */
+    private fun rebaseline(account: Account, collection: DavCollection, rowId: Long, key: String, body: String) {
+        val parsed = parseVCard(body)
+        if (parsed == null) {
+            // Our own output failed to parse, which is a bug rather than input: keeping the old copy is
+            // the safe half of the change, since the rows still describe something the server accepted.
+            Log.e(LOG_TAG, "${collection.id}: uploaded body for contact $rowId does not parse back, not re-baselining")
+            return
+        }
+        val dataUri = Data.CONTENT_URI.forSyncAdapter(account)
+        val ref = RowRef.existing(rowId)
+        val batch = ArrayList<ContentProviderOperation>()
+        batch += ContentProviderOperation.newDelete(dataUri)
+            .withSelection(
+                "${Data.RAW_CONTACT_ID}=? AND ${Data.MIMETYPE} NOT IN (?, ?)",
+                arrayOf(rowId.toString(), Photo.CONTENT_ITEM_TYPE, GroupMembership.CONTENT_ITEM_TYPE),
+            )
+            .build()
+        for (row in parsed.rows) batch += dataInsert(dataUri, ref, row)
+        batch += dataInsert(dataUri, ref, verbatimRow(Resource(key, body, parsed), collection))
+        resolver.applyBatch(authority, batch)
+        refreshPhotoBaselines(account, listOf(rowId))
+    }
+
+    /**
+     * Records which version of a photo row the current uploads are based on: `Data.SYNC2` is the
+     * `DATA_VERSION` the row had when it was last sent, and the two being equal is what lets the next
+     * edit copy the server's own `PHOTO` through untouched instead of re-encoding the image.
+     *
+     * `DATA_VERSION` is the provider's, incremented by it on every write, so it can only be read after
+     * the rows are written — and it is read here rather than assumed, because what the next comparison
+     * needs is the value the provider actually kept.
+     */
+    private fun refreshPhotoBaselines(account: Account, rowIds: List<Long>) {
+        if (rowIds.isEmpty()) return
+        val dataUri = Data.CONTENT_URI.forSyncAdapter(account)
+        val placeholders = rowIds.joinToString(",") { "?" }
+        val baselines = LinkedHashMap<Long, Long>()
+        resolver.query(
+            dataUri,
+            arrayOf(BaseColumns._ID, Data.DATA_VERSION),
+            "${Data.RAW_CONTACT_ID} IN ($placeholders) AND ${Data.MIMETYPE}=?",
+            rowIds.map { it.toString() }.toTypedArray() + Photo.CONTENT_ITEM_TYPE,
+            null,
+        )?.use { cursor ->
+            while (cursor.moveToNext()) baselines[cursor.getLong(0)] = cursor.getLong(1)
+        }
+        if (baselines.isEmpty()) return
+        val batch = ArrayList<ContentProviderOperation>()
+        for ((dataRowId, version) in baselines) {
+            batch += ContentProviderOperation.newUpdate(ContentUris.withAppendedId(dataUri, dataRowId))
+                .withValues(ContentValues().apply { put(Data.SYNC2, version) })
+                .build()
+        }
+        resolver.applyBatch(authority, batch)
     }
 
     // ------------------------------------------------------------------ rows
@@ -322,17 +758,28 @@ class ContactsMapper(
         batch: MutableList<ContentProviderOperation>,
         stats: UpsertStats,
         known: KnownRows,
-    ): RowRef {
+        /** Collects the contacts whose photo row this batch writes, for the baseline pass after it. */
+        photoContacts: MutableList<RowRef>,
+    ): RowRef? {
+        val existing = known.contactIdsBySourceId[resource.key]
+        // The phone's version of a row the user has edited or deleted since this listing was fetched is
+        // the newer one, server or no server. The engine keeps such keys out of `wanted` for the same
+        // reason; this is the second line, because the two can disagree in the seconds between.
+        if (existing != null && existing.pending) {
+            stats.heldBack++
+            Log.i(LOG_TAG, "${collection.id}/${resource.key}: has an edit waiting to be uploaded, not overwriting it")
+            return null
+        }
+
         val sync = ContentValues().apply {
             put(RawContacts.SOURCE_ID, resource.key)
             put(RawContacts.SYNC3, collection.id)
             put(RawContacts.SYNC1, resource.parsed.uid)
             if (etag != null) put(RawContacts.SYNC2, etag) else putNull(RawContacts.SYNC2)
-            // Nothing this app writes is an edit waiting to be uploaded.
+            // What the server says is not an edit waiting to be uploaded.
             put(RawContacts.DIRTY, 0)
         }
 
-        val existing = known.contactIdsBySourceId[resource.key]
         val ref: RowRef
         if (existing == null) {
             val index = batch.size
@@ -344,9 +791,9 @@ class ContactsMapper(
                 .build()
             ref = RowRef.pending(index)
         } else {
-            ref = RowRef.existing(existing)
+            ref = RowRef.existing(existing.id)
             batch += ContentProviderOperation.newUpdate(rawContactsUri)
-                .withSelection("${RawContacts._ID}=?", arrayOf(existing.toString()))
+                .withSelection("${RawContacts._ID}=?", arrayOf(existing.id.toString()))
                 .withValues(sync)
                 .build()
             // The server is the source of truth, so nothing the previous run wrote may survive: a
@@ -356,7 +803,7 @@ class ContactsMapper(
             batch += ContentProviderOperation.newDelete(dataUri)
                 .withSelection(
                     "${Data.RAW_CONTACT_ID}=? AND NOT (${Data.MIMETYPE}=? AND ${Data.DATA2}=?)",
-                    arrayOf(existing.toString(), GroupMembership.CONTENT_ITEM_TYPE, MEMBERSHIP_FROM_GROUP),
+                    arrayOf(existing.id.toString(), GroupMembership.CONTENT_ITEM_TYPE, MEMBERSHIP_FROM_GROUP),
                 )
                 .build()
         }
@@ -364,7 +811,16 @@ class ContactsMapper(
         for (row in resource.parsed.rows) {
             batch += dataInsert(dataUri, ref, row)
         }
-        photoRow(resource, collection, stats)?.let { batch += dataInsert(dataUri, ref, it) }
+        photoRow(resource, collection, stats)?.let { bytes ->
+            batch += ContentProviderOperation.newInsert(dataUri)
+                .withValue(Data.MIMETYPE, Photo.CONTENT_ITEM_TYPE)
+                .withValue(Photo.PHOTO, bytes)
+                .withRowRef(Data.RAW_CONTACT_ID, ref)
+                .build()
+            // The snapshot this row needs can only be taken once it exists and the provider has given
+            // it a version.
+            photoContacts += ref
+        }
         batch += dataInsert(dataUri, ref, verbatimRow(resource, collection))
         stats.unmappedProperties += resource.parsed.unmappedProperties
         return ref
@@ -425,12 +881,45 @@ class ContactsMapper(
         }
     }
 
-    private fun dataInsert(dataUri: Uri, ref: RowRef, row: DataRow): ContentProviderOperation =
-        ContentProviderOperation.newInsert(dataUri)
-            .withValues(row.values)
+    /**
+     * One `Data` row of a mapped kind.
+     *
+     * The handle the source property landed under goes into `SYNC1`, the sync adapter's own column:
+     * the upload path matches a row against the text it patches by it, and it is absent exactly when
+     * the row is one the mapping never derived a property for.
+     */
+    private fun dataInsert(dataUri: Uri, ref: RowRef, row: DataRow): ContentProviderOperation {
+        val insert = ContentProviderOperation.newInsert(dataUri)
+            .withValues(row.toContentValues())
             .withValue(Data.MIMETYPE, row.mimeType)
             .withRowRef(Data.RAW_CONTACT_ID, ref)
-            .build()
+        row.handle?.let { insert.withValue(Data.SYNC1, it) }
+        return insert.build()
+    }
+
+    /**
+     * The row as the provider wants it.
+     *
+     * Values travel as text so that a row a cursor returned and one the mapping derived can be
+     * compared without a type table (`VCardPatch.kt`), so the few columns the provider stores as
+     * numbers have to be handed back as numbers: its data-kind handlers read a type column as an
+     * integer and refuse a row without one.
+     *
+     * Which column that is depends on the MIME type, not on the column name. `Phone.TYPE`,
+     * `Email.TYPE` and `Event.TYPE` are all the string `data2`, and so is `StructuredName`'s
+     * `GIVEN_NAME` — keyed on the name alone, a contact called Test has a given name parsed as an
+     * integer, which is a crash on every name this app writes.
+     */
+    private fun DataRow.toContentValues(): ContentValues = ContentValues().apply {
+        val integerColumn = INTEGER_COLUMN_BY_MIME_TYPE[mimeType]
+        for ((column, value) in values) {
+            when {
+                value == null -> putNull(column)
+                column == integerColumn -> value.toIntOrNull()?.let { put(column, it) } ?: put(column, value)
+                else -> put(column, value)
+            }
+        }
+    }
 
     /**
      * The value for [column]: a row id, or a reference to the result of an earlier operation in the
@@ -477,21 +966,21 @@ class ContactsMapper(
     private fun verbatimRow(resource: Resource, collection: DavCollection): DataRow =
         DataRow(
             VCARD_MIME_TYPE,
-            ContentValues().apply {
-                put(Data.DATA1, resource.text)
-                put(Data.DATA2, collection.displayName ?: collection.id)
-                put(Data.DATA3, resource.key)
-            },
+            mapOf(
+                Data.DATA1 to resource.text,
+                Data.DATA2 to (collection.displayName ?: collection.id),
+                Data.DATA3 to resource.key,
+            ),
         )
 
     /**
-     * The photo row, from bytes the vCard carries or from a URL it points at.
+     * The bytes for the photo row, from bytes the vCard carries or from a URL it points at.
      *
      * The bytes written are the display-size image: the provider derives both the thumbnail and the
      * display photo file from them, and only creates that file when what it is given is larger than
      * a thumbnail.
      */
-    private fun photoRow(resource: Resource, collection: DavCollection, stats: UpsertStats): DataRow? {
+    private fun photoRow(resource: Resource, collection: DavCollection, stats: UpsertStats): ByteArray? {
         val source = resource.parsed.photo ?: return null
         val bytes = when (source) {
             is PhotoSource.Inline -> source.bytes
@@ -503,7 +992,7 @@ class ContactsMapper(
             Log.w(LOG_TAG, "${collection.id}/${resource.key}: photo does not decode, skipping it")
             return null
         }
-        return DataRow(Photo.CONTENT_ITEM_TYPE, ContentValues().apply { put(Photo.PHOTO, image) })
+        return image
     }
 
     /**
@@ -554,18 +1043,18 @@ class ContactsMapper(
         val groupsUri = Groups.CONTENT_URI.forSyncAdapter(account)
         val scope = collectionArgs(account, collection)
         return KnownRows(
-            contactIdsBySourceId = idsByName(
+            contactIdsBySourceId = contactsByName(
                 rawContactsUri,
                 RawContacts.SOURCE_ID,
-                contactSelection(),
+                visibleContactsSelection(),
                 scope,
                 contacts.map { it.key },
             ),
             // A group's MEMBER names a contact by its vCard UID, which this class stores in SYNC1.
-            contactIdsByUid = idsByName(
+            contactIdsByUid = contactsByName(
                 rawContactsUri,
                 RawContacts.SYNC1,
-                contactSelection(),
+                visibleContactsSelection(),
                 scope,
                 groups.flatMap { it.parsed.members }.distinct(),
             ),
@@ -590,32 +1079,78 @@ class ContactsMapper(
     /**
      * The id of every row carrying one of [names] in [column], within [scope].
      *
-     * Chunked like [deleteRows], and for the same reason: an `IN` list is bounded by the variables one
-     * statement may bind, and a group vCard may name thousands of members. [scopeArgs] spends three of
-     * those, which one chunk of [SQL_VARIABLES_PER_STATEMENT] leaves room for.
-     *
      * The first row wins, which is what the per-resource query returned as well.
      */
     private fun idsByName(
         uri: Uri,
         column: String,
-        scope: String,
+        selection: String,
         scopeArgs: Array<String>,
         names: List<String>,
     ): Map<String, Long> {
         if (names.isEmpty()) return emptyMap()
         val ids = HashMap<String, Long>()
-        for (chunk in names.chunked(SQL_VARIABLES_PER_STATEMENT)) {
-            val placeholders = chunk.joinToString(",") { "?" }
-            resolver.query(uri, arrayOf(BaseColumns._ID, column), "$scope AND $column IN ($placeholders)", scopeArgs + chunk, null)
-                ?.use { cursor ->
-                    while (cursor.moveToNext()) {
-                        val name = cursor.getString(1) ?: continue
-                        ids.putIfAbsent(name, cursor.getLong(0))
-                    }
-                }
+        eachNamedRow(uri, arrayOf(BaseColumns._ID, column), column, selection, scopeArgs, names) { cursor ->
+            val name = cursor.getString(1) ?: return@eachNamedRow
+            ids.putIfAbsent(name, cursor.getLong(0))
         }
         return ids
+    }
+
+    /**
+     * The same lookup for contacts, carrying the two flags that decide whether a write may touch the
+     * row: `DIRTY` is an edit waiting to be uploaded and `DELETED` is a tombstone — both of them rows
+     * the server's copy of that resource must not be written over.
+     */
+    private fun contactsByName(
+        uri: Uri,
+        column: String,
+        selection: String,
+        scopeArgs: Array<String>,
+        names: List<String>,
+    ): Map<String, KnownContact> {
+        if (names.isEmpty()) return emptyMap()
+        val contacts = HashMap<String, KnownContact>()
+        eachNamedRow(
+            uri,
+            arrayOf(BaseColumns._ID, column, RawContacts.DIRTY, RawContacts.DELETED),
+            column,
+            selection,
+            scopeArgs,
+            names,
+        ) { cursor ->
+            val name = cursor.getString(1) ?: return@eachNamedRow
+            contacts.putIfAbsent(
+                name,
+                KnownContact(cursor.getLong(0), pending = cursor.getLong(2) != 0L || cursor.getLong(3) != 0L),
+            )
+        }
+        return contacts
+    }
+
+    /**
+     * One `IN`-bounded lookup, in chunks.
+     *
+     * Chunked for the same reason [deleteRows] is: an `IN` list is bounded by the variables one
+     * statement may bind, and a group vCard may name thousands of members. [selectionArgs] spends
+     * three of those, which one chunk of [SQL_VARIABLES_PER_STATEMENT] leaves room for.
+     */
+    private fun eachNamedRow(
+        uri: Uri,
+        columns: Array<String>,
+        column: String,
+        selection: String,
+        selectionArgs: Array<String>,
+        names: List<String>,
+        collect: (Cursor) -> Unit,
+    ) {
+        for (chunk in names.chunked(SQL_VARIABLES_PER_STATEMENT)) {
+            val placeholders = chunk.joinToString(",") { "?" }
+            resolver.query(uri, columns, "$selection AND $column IN ($placeholders)", selectionArgs + chunk, null)
+                ?.use { cursor ->
+                    while (cursor.moveToNext()) collect(cursor)
+                }
+        }
     }
 
     /**
@@ -623,11 +1158,14 @@ class ContactsMapper(
      * error: no such row is there yet, which is what [RowRef.pending] exists for.
      */
     private class KnownRows(
-        val contactIdsBySourceId: Map<String, Long>,
-        val contactIdsByUid: Map<String, Long>,
+        val contactIdsBySourceId: Map<String, KnownContact>,
+        val contactIdsByUid: Map<String, KnownContact>,
         val groupIdsBySourceId: Map<String, Long>,
         val groupIdsByTitle: Map<String, Long>,
     )
+
+    /** One contact row, and whether the phone's version of it is one the server must not overwrite. */
+    private class KnownContact(val id: Long, val pending: Boolean)
 
     private fun queryId(uri: Uri, selection: String, args: Array<String>): Long? =
         resolver.query(uri, arrayOf(BaseColumns._ID), selection, args, null)?.use { cursor ->
@@ -686,6 +1224,28 @@ class ContactsMapper(
     private fun contactSelection(): String =
         "${RawContacts.ACCOUNT_NAME}=? AND ${RawContacts.ACCOUNT_TYPE}=? AND ${RawContacts.SYNC3}=? " +
             "AND ${RawContacts.SOURCE_ID} IS NOT NULL AND ${RawContacts.DELETED}=0"
+
+    /**
+     * The same scope with the tombstones left in, for the one caller that has to see a deleted row:
+     * [upsert], which would otherwise insert a second contact beside the row whose href it is writing
+     * — the row it cannot see being a row the user deleted, whose upload has not run yet.
+     */
+    private fun visibleContactsSelection(): String =
+        "${RawContacts.ACCOUNT_NAME}=? AND ${RawContacts.ACCOUNT_TYPE}=? AND ${RawContacts.SYNC3}=? " +
+            "AND ${RawContacts.SOURCE_ID} IS NOT NULL"
+
+    /**
+     * The scope of a pending-edit query: one Account, one Collection, and whatever applies to the kind
+     * of edit being asked about. A created row has no Collection yet, which is why
+     * [accountSelection] exists beside it.
+     */
+    private fun collectionSelection(rest: String): String =
+        "${RawContacts.ACCOUNT_NAME}=? AND ${RawContacts.ACCOUNT_TYPE}=? AND ${RawContacts.SYNC3}=? AND $rest"
+
+    private fun accountSelection(rest: String): String =
+        "${RawContacts.ACCOUNT_NAME}=? AND ${RawContacts.ACCOUNT_TYPE}=? AND $rest"
+
+    private fun accountArgs(account: Account): Array<String> = arrayOf(account.name, account.type)
 
     /** The same scope for groups, whose lookups do run against the groups view. */
     private fun groupSelection(): String =
@@ -752,6 +1312,7 @@ class ContactsMapper(
         var foreignPhotos = 0
         var unreadablePhotos = 0
         var unfetchedPhotos = 0
+        var heldBack = 0
 
         fun log(collection: DavCollection) {
             Log.i(
@@ -759,7 +1320,8 @@ class ContactsMapper(
                 "${collection.id}: $items items, $memberships memberships, " +
                     "$unmappedProperties unmapped properties, $unresolvedMemberships unresolved " +
                     "memberships, $unreadable unreadable, $foreignPhotos photos off the Origin, " +
-                    "$unreadablePhotos photos that do not decode, $unfetchedPhotos photos not fetched",
+                    "$unreadablePhotos photos that do not decode, $unfetchedPhotos photos not fetched, " +
+                    "$heldBack rows with an edit waiting to be uploaded",
             )
         }
     }
@@ -781,5 +1343,49 @@ class ContactsMapper(
 
         /** Marks a membership row written from a group vCard's member list. */
         const val MEMBERSHIP_FROM_GROUP = "members"
+
+        /**
+         * Every `Data` column a mapped kind can use. The mapping writes each kind into these ten, so
+         * they are what the upload path projects: it has to see the columns a kind does not use as
+         * null, or a value the user cleared would read the same as one that never applied.
+         */
+        val DATA_COLUMNS = listOf(
+            Data.DATA1,
+            Data.DATA2,
+            Data.DATA3,
+            Data.DATA4,
+            Data.DATA5,
+            Data.DATA6,
+            Data.DATA7,
+            Data.DATA8,
+            Data.DATA9,
+            Data.DATA10,
+        )
+
+        /**
+         * The one `Data` column each kind stores as a number, by MIME type.
+         *
+         * Keyed by MIME type rather than by column because the column names collide: `Phone.TYPE`,
+         * `Email.TYPE`, `StructuredPostal.TYPE`, `Website.TYPE` and `Event.TYPE` are all `data2`,
+         * and `data2` is also `StructuredName.GIVEN_NAME`, which is a name and not a number.
+         */
+        val INTEGER_COLUMN_BY_MIME_TYPE = mapOf(
+            Phone.CONTENT_ITEM_TYPE to Phone.TYPE,
+            Email.CONTENT_ITEM_TYPE to Email.TYPE,
+            StructuredPostal.CONTENT_ITEM_TYPE to StructuredPostal.TYPE,
+            Website.CONTENT_ITEM_TYPE to Website.TYPE,
+            Event.CONTENT_ITEM_TYPE to Event.TYPE,
+            GroupMembership.CONTENT_ITEM_TYPE to GroupMembership.GROUP_ROW_ID,
+        )
+
+        /** Contacts deleted on the phone, which name a resource to delete on the server. */
+        const val PENDING_DELETES = "${RawContacts.DELETED}=1 AND ${RawContacts.SOURCE_ID} IS NOT NULL"
+
+        /** Edits to a resource this app has already written. */
+        const val PENDING_UPDATES =
+            "${RawContacts.DIRTY}=1 AND ${RawContacts.SOURCE_ID} IS NOT NULL AND ${RawContacts.DELETED}=0"
+
+        /** Contacts made on the phone, which no server has been told about yet. */
+        const val PENDING_CREATES = "${RawContacts.SOURCE_ID} IS NULL AND ${RawContacts.DELETED}=0"
     }
 }

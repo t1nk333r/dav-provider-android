@@ -383,17 +383,28 @@ internal object CollectionDiscovery {
      * out of the sync, and with it the Account's schedule if it was the only one selected. Only the
      * sync's own answer for that URL may retire it.
      *
+     * The user's own settings survive the fold: what a walk learns is what the *server* says about a
+     * Collection — its name, its colour, whether it is still listed — and never what the user
+     * decided about it here. [DavCollection.selected], [DavCollection.pinned] and
+     * [DavCollection.writable] are carried over from the stored Collection for that reason; a walk
+     * that reset `writable` would quietly stop sending a Collection's edits while the screen still
+     * showed the switch on.
+     *
      * Only ever called with [DiscoveryOutcome.completed].
      */
     fun merge(existing: List<DavCollection>, discovered: List<DavCollection>): List<DavCollection> {
         val fresh = discovered.associateBy { it.id }
         val kept = existing.map { prior ->
-            fresh[prior.id]?.copy(id = prior.id, selected = prior.selected, pinned = prior.pinned)
-                ?: if (prior.pinned) prior else prior.copy(available = false)
+            fresh[prior.id]?.copy(
+                id = prior.id,
+                selected = prior.selected,
+                pinned = prior.pinned,
+                writable = prior.writable,
+            ) ?: if (prior.pinned) prior else prior.copy(available = false)
         }
         val added = discovered
             .filter { entry -> existing.none { it.id == entry.id } }
-            .map { it.copy(selected = false) }
+            .map { it.copy(selected = false, writable = false) }
         return kept + added
     }
 }

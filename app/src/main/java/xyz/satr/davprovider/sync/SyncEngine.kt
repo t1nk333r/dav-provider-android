@@ -5,7 +5,9 @@ import android.content.ContentResolver
 import android.content.SyncResult
 import android.os.Bundle
 import io.ktor.http.Url
+import java.util.UUID
 import xyz.satr.davprovider.core.AccountStore
+import xyz.satr.davprovider.core.ChangeKind
 import xyz.satr.davprovider.core.CollectionState
 import xyz.satr.davprovider.core.CollectionType
 import xyz.satr.davprovider.core.CredentialsUnreadableException
@@ -13,6 +15,7 @@ import xyz.satr.davprovider.core.DavAccount
 import xyz.satr.davprovider.core.DavCollection
 import xyz.satr.davprovider.core.DavHttpClientFactory
 import xyz.satr.davprovider.core.ErrorClass
+import xyz.satr.davprovider.core.LocalChange
 import xyz.satr.davprovider.core.ProviderMapper
 import xyz.satr.davprovider.core.RemoteItem
 import xyz.satr.davprovider.core.SyncError
@@ -56,6 +59,17 @@ private val ACCOUNT_ABORTING_CLASSES = setOf(
  *    describe, and Collection state goes through [ProviderMapper.readState]/[ProviderMapper.writeState];
  *    there is no local database that could outlive the provider's account cleanup.
  *
+ * And one about the direction this engine now runs in as well: a row is clean again only when the
+ * server has answered for it. Step U sends every pending change before the listing, and
+ * [ProviderMapper.markUploaded] is the one place a dirty flag is cleared; the read-only backstop
+ * that used to clear it after every Collection is gone, because once uploads exist every DIRTY row
+ * is a row an editor has changed and no run has sent yet.
+ *
+ * A run the framework starts with `SYNC_EXTRAS_UPLOAD` is upload-only: step U for every writable
+ * Collection and nothing else — no listing, no deletion, no state write. The exception is a
+ * Collection where step U gave something up, which continues through the rest of the sequence
+ * because the row it reverted is waiting for the server's version.
+ *
  * Retrying is the framework's: the outcome is expressed in the [SyncResult] counters and nothing
  * here loops.
  *
@@ -98,6 +112,10 @@ class SyncEngine(
         // evidence has to be able to tell the framework's own runs from the user's.
         val manual = extras.getBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, false)
         val automatic = !manual
+
+        // What the framework asks for when a provider reports a dirtying write. Such a run has one
+        // job, and the Collections below are the ones it has it for.
+        val uploadOnly = extras.getBoolean(ContentResolver.SYNC_EXTRAS_UPLOAD, false)
 
         try {
             ensureAccountRegistered(account)
@@ -200,7 +218,12 @@ class SyncEngine(
             for (collection in collectionsOf(davAccount)) {
                 if (isCancelled()) break
 
-                val outcome = syncCollection(account, davAccount, http, collection, result)
+                // An upload-only run sends, and only sends: a Collection nobody has made writable has
+                // nothing to send under any circumstances, so it is not visited at all rather than
+                // refused — the periodic run is where a read-only Collection's edits are reverted.
+                if (uploadOnly && !collection.writable) continue
+
+                val outcome = syncCollection(account, davAccount, http, collection, result, uploadOnly)
                 outcomes += outcome
 
                 if (outcome.abortsAccount) {
@@ -232,13 +255,43 @@ class SyncEngine(
         http: DavHttpSession,
         collection: DavCollection,
         result: SyncResult,
+        uploadOnly: Boolean,
     ): CollectionOutcome {
         val startedAt = clock()
         val state = mapper.readState(account, collection)
         val session = CollectionSession(http.client, collection, http::startOperation)
         val errors = errorMapping(davAccount, http)
 
+        // Read outside the try so that a run which failed after step U still reports what step U
+        // managed: those rows are on the server whatever the listing did next.
+        var uploads = Uploads()
+
         return try {
+            // §6 step 2, before anything is sent: what the provider shows about the Collection itself
+            // — a calendar's access level — is refreshed on every run, because a Collection whose CTag
+            // never moves would otherwise never learn that the user changed the setting.
+            mapper.ensureCollection(account, collection)
+
+            // §6 step U, and before the cheap check rather than after it. The upload is what makes a
+            // Collection dirty, and a Collection whose only change is local has to be sent even though
+            // its CTag has not moved; the other half of the reason is the fetch below, which replaces
+            // a resource's rows wholesale and would discard an edit that has not left the phone yet.
+            uploads = uploadChanges(account, collection, session, errors)
+
+            // Step U ended the Collection: the listing would meet the same failure, and the changes it
+            // never reached are still DIRTY for the next run.
+            val failure = uploads.error
+            if (failure != null) {
+                record(result, failure)
+                return uploads.outcome(collection)
+            }
+
+            // An upload-only run stops here, with no listing and no state write: the framework asked
+            // for the uploads, and the periodic run is what lists. The exception is a Collection where
+            // step U gave something up — a reverted row is a row waiting for the server's version,
+            // and the next periodic run may be an hour away.
+            if (uploadOnly && !uploads.reverted) return uploads.outcome(collection)
+
             // The answer this run got, carried into step 7's state write: the poll path must not
             // overwrite what the probe just learned.
             var supportsSyncCollection = state.supportsSyncCollection
@@ -251,7 +304,7 @@ class SyncEngine(
 
                 if (report != null) {
                     return applyChanges(
-                        account, collection, session, report.members,
+                        account, collection, session, report.members, uploads,
                         fullListing = report.fullListing,
                         // A REPORT names no CTag; the last one we listed at is kept. A server whose
                         // CTag has moved on since then simply makes the next polling run list in full.
@@ -270,13 +323,13 @@ class SyncEngine(
                 capabilityCheckedAt = startedAt
             }
 
-            poll(account, collection, session, state, supportsSyncCollection, capabilityCheckedAt, result)
+            poll(account, collection, session, state, uploads, supportsSyncCollection, capabilityCheckedAt, result)
         } catch (e: AccountVanishedException) {
             throw e
         } catch (e: Exception) {
             val error = errors.classify(e, session.lastMethod)
             record(result, error)
-            CollectionOutcome(collection, error = error)
+            uploads.outcome(collection, error)
         }
     }
 
@@ -286,16 +339,17 @@ class SyncEngine(
         collection: DavCollection,
         session: CollectionSession,
         state: CollectionState,
+        uploads: Uploads,
         supportsSyncCollection: Boolean?,
         capabilityCheckedAt: Long,
         result: SyncResult,
     ): CollectionOutcome {
         val ctag = session.ctag()
         if (ctag != null && ctag == state.ctag)
-            return CollectionOutcome(collection, unchanged = true)
+            return uploads.outcome(collection).copy(unchanged = true)
 
         return applyChanges(
-            account, collection, session, session.members(),
+            account, collection, session, session.members(), uploads,
             fullListing = true,
             newCtag = ctag,
             // A full listing invalidates any sync token: the next REPORT must start from scratch.
@@ -306,12 +360,16 @@ class SyncEngine(
         )
     }
 
-    /** §6 steps 3 to 7, plus §7's read-only backstop, for a Collection whose members are known. */
+    /**
+     * §6 steps 3 to 7 for a Collection whose members are known, with [uploads] — what step U did
+     * before this — carried into the outcome the run reports.
+     */
     private suspend fun applyChanges(
         account: Account,
         collection: DavCollection,
         session: CollectionSession,
         members: Members,
+        uploads: Uploads,
         fullListing: Boolean,
         newCtag: String?,
         newToken: String?,
@@ -324,9 +382,13 @@ class SyncEngine(
 
         // Step 3: fetch adds and updates only. An href whose ETag already matches the row needs no
         // body, and an href the server gives no ETag for can never be compared, so it is fetched.
+        //
+        // The exception is the href of a change step U did not send: its rows are still DIRTY, and
+        // `upsert` replaces a resource's rows wholesale, so fetching it here would discard the edit
+        // the next run is still carrying.
         val wanted = mutableMapOf<String, RemoteItem>()
         for ((key, item) in members.byKey)
-            if (item.etag == null || local[key] != item.etag)
+            if (key !in uploads.held && (item.etag == null || local[key] != item.etag))
                 wanted[key] = item
 
         // Steps 3 and 4, in batches of 50: each batch is committed, and its ETags are persisted with
@@ -356,15 +418,22 @@ class SyncEngine(
             if (members.completed) deleteMissing(account, collection, members, keptHrefs(fullListing, local.keys, members))
             else 0
 
-        // §7: re-apply server state and drop DIRTY, so an edit made in an editor that ignored
-        // supportsUploading="false" reverts visibly within an interval.
-        mapper.clearDirty(account, collection)
+        // Nothing clears a dirty flag here. A row is clean again only once `markUploaded` has stored
+        // the server's answer for it, which step U did above for everything it managed to send; a
+        // row step U left dirty is one this run has not sent, and clearing it here — which is what
+        // the read-only backstop used to do — is exactly the edit thrown away this design exists to
+        // stop. A read-only Collection's rows are reverted in step U, not here.
 
         // Step 7, and not a line earlier — nor at all when this run learned less than the Collection
         // had to say. The state written here is what the *next* run trusts: store a CTag or a token
         // now and the cheap check short-circuits a Collection whose missing item was never fetched,
         // for as long as the server's own state sits still. Leaving it exactly as found costs one
         // listing next run and is the difference between a retry and a permanent stall.
+        //
+        // A change left pending does not withhold it. The token describes the listing this run read,
+        // and a row that is still dirty is found by `pendingChanges` at the start of the next run
+        // whatever the token says — withholding the token for one would cost a full listing every run
+        // for as long as the server keeps refusing that body, which is the stall this rule removed.
         val incomplete = missing > 0 || members.truncated
         if (!incomplete) {
             mapper.writeState(
@@ -384,9 +453,197 @@ class SyncEngine(
             collection,
             written = written,
             deleted = deleted,
+            uploaded = uploads.uploaded,
+            pending = uploads.pending,
+            refused = uploads.refused,
+            conflicts = uploads.conflicts,
             missing = missing,
             truncated = members.truncated,
             relisted = relisted,
+        )
+    }
+
+    /**
+     * §6 step U: every row the phone has changed, sent before anything of the server's is read.
+     *
+     * Running it here rather than after the fetch is what the design turns on: `upsert` replaces a
+     * resource's rows wholesale, so a server-side change fetched first would discard an edit that has
+     * not been sent yet. What step U leaves behind is carried back in [Uploads.held], and `wanted`
+     * keeps those hrefs out of the fetch for the same reason.
+     *
+     * Failures split two ways, and the split is the difference between a retry that happens and one
+     * that never will. A retryable failure on any request ends step U and the Collection with that
+     * error, because the listing would meet the same wall and §5 leaves retrying to the framework.
+     * A refusal one item can do nothing about — a body the server will not take, a row the mapper
+     * will not serialise — leaves that row DIRTY, counts it pending, and lets the run carry on: one
+     * body the server will not take is not a reason to stop learning what the server has.
+     */
+    private suspend fun uploadChanges(
+        account: Account,
+        collection: DavCollection,
+        session: CollectionSession,
+        errors: ErrorMapping,
+    ): Uploads {
+        val changes = uploadOrder(mapper.pendingChanges(account, collection))
+
+        // §7: a Collection the user has not made writable is refused rather than uploaded. Every
+        // pending change is given up here, which is the narrow successor of the §7 backstop — DIRTY
+        // is cleared only for rows whose Collection the user has said may not be written, and the
+        // fetch that follows in this same run makes the revert visible within the interval. A created
+        // contact has nowhere to be fetched onto and is the mapper's to leave dirty; it is counted
+        // pending on the run that finds it again.
+        if (!collection.writable) {
+            var refused = 0
+            for (change in changes) {
+                ensureAccountRegistered(account)
+                mapper.revertLocalChange(account, collection, change)
+                refused++
+            }
+            return Uploads(refused = refused, reverted = refused > 0)
+        }
+
+        var uploaded = 0
+        var pending = 0
+        var reverted = false
+        val conflicts = mutableListOf<String>()
+        val held = mutableSetOf<String>()
+
+        for ((index, change) in changes.withIndex()) {
+            ensureAccountRegistered(account)
+
+            try {
+                when (change.kind) {
+                    ChangeKind.DELETE -> {
+                        // A row created and deleted before any run was never on the server: there is
+                        // nothing to send, and the tombstone is dropped here.
+                        if (change.key == null) {
+                            mapper.purgeDeleted(account, collection, change)
+                            uploaded++
+                            continue
+                        }
+
+                        when (answerOf(session.delete(change.key, change.etag))) {
+                            ChangeAction.Purge -> {
+                                mapper.purgeDeleted(account, collection, change)
+                                uploaded++
+                            }
+
+                            ChangeAction.Revert -> {
+                                // The server's item moved after this phone last saw it, so the
+                                // deletion is given up and the run's fetch brings the server's version
+                                // back onto the row. Server wins, as it does for an update.
+                                mapper.revertLocalChange(account, collection, change)
+                                conflicts += change.key
+                                reverted = true
+                            }
+
+                            is ChangeAction.MarkUploaded ->
+                                error("a DELETE is never answered with a resource to store")
+                        }
+                    }
+
+                    ChangeKind.CREATE, ChangeKind.UPDATE -> {
+                        val body = mapper.serialize(account, collection, change)
+                        if (body == null) {
+                            // No bytes: a stored copy that does not parse, a row the rows do not
+                            // represent. The row stays DIRTY and is counted pending — it is never
+                            // uploaded from a partial reading of it.
+                            pending++
+                            change.key?.let { held += it }
+                            continue
+                        }
+
+                        // A change with no key is one the phone created: it is PUT under the name
+                        // its UID makes, and `If-None-Match: *` is what keeps that name from
+                        // overwriting an item this run has not seen.
+                        val creating = change.key == null
+                        val target = change.key
+                            ?: createPath(session.collectionUrl.encodedPath, collection, body.uid)
+
+                        val action = answerOf(
+                            session.put(
+                                href = target,
+                                body = body.text,
+                                contentType = contentTypeOf(collection),
+                                ifMatch = if (creating) null else change.etag,
+                                ifNoneMatchAny = creating,
+                            ),
+                        )
+
+                        when (action) {
+                            is ChangeAction.MarkUploaded -> {
+                                // The key is the path the server named the item by, which for a
+                                // create need not be the one that was PUT to.
+                                val key = if (creating)
+                                    adoptKey(target, action.location, session.collectionUrl)
+                                else target
+
+                                if (key == null) {
+                                    // A Location outside the Collection is one no listing of it will
+                                    // ever name, so a row keyed by it is one `deleteMissing` removes
+                                    // on the next run. The row stays DIRTY instead.
+                                    pending++
+                                    held += target
+                                    continue
+                                }
+
+                                val stored = mapper.markUploaded(
+                                    account, collection, change, key, body.uid, action.etag, body.text,
+                                )
+                                if (stored) {
+                                    uploaded++
+                                } else {
+                                    // The row moved while the answer was in flight: the edit that
+                                    // arrived during the request is still pending, and the next run
+                                    // sends it.
+                                    pending++
+                                    held += key
+                                }
+                            }
+
+                            ChangeAction.Revert -> {
+                                // Server wins, for a create as much as for an update. The one
+                                // realistic 412 on a create is this app's own answer going missing,
+                                // and retrying under a fresh name would leave the item the server did
+                                // store behind as a duplicate.
+                                mapper.revertLocalChange(account, collection, change)
+                                conflicts += (change.key ?: target)
+                                reverted = true
+                            }
+
+                            ChangeAction.Purge -> error("a PUT is never answered like a DELETE")
+                        }
+                    }
+                }
+            } catch (e: AccountVanishedException) {
+                throw e
+            } catch (e: Exception) {
+                val error = errors.classify(e, session.lastMethod)
+
+                // Retryable: the listing would meet the same wall, so the Collection ends here and
+                // every change that was not sent — this one included — stays DIRTY for the next run.
+                if (error.errorClass.retryable)
+                    return Uploads(
+                        uploaded = uploaded,
+                        pending = pending + (changes.size - index),
+                        conflicts = conflicts,
+                        held = held,
+                        error = error,
+                    )
+
+                // Not retryable, so asking again would get the same answer: the row stays DIRTY and
+                // the run carries on to the listing.
+                pending++
+                change.key?.let { held += it }
+            }
+        }
+
+        return Uploads(
+            uploaded = uploaded,
+            pending = pending,
+            conflicts = conflicts,
+            held = held,
+            reverted = reverted,
         )
     }
 
@@ -556,3 +813,141 @@ internal fun keptHrefs(fullListing: Boolean, local: Set<String>, members: Member
     } else {
         (local + members.byKey.keys) - members.removed
     }
+
+/**
+ * What step U did for one Collection.
+ *
+ * [held] is the half of its job the fetch depends on: the keys whose rows are still dirty. Written
+ * over, they would lose the edit; skipped, the next run finds them again through `pendingChanges`
+ * whatever the CTag says.
+ *
+ * [error] is set only when step U ended the Collection — a failure the next request would meet too.
+ * An item the server refused does not set it: that row is still on the phone and the Collection is
+ * failed by [pending], which is a different statement from "this run could not talk to the server".
+ */
+private class Uploads(
+    /** Changes step U is done with: the server answered for them, or there was nothing to send. */
+    val uploaded: Int = 0,
+    /** Changes still on the phone: rows this run could not send, or rows that moved under an answer. */
+    val pending: Int = 0,
+    /** Changes given up because the Collection is not writable. */
+    val refused: Int = 0,
+    /** The keys of the changes the server's copy replaced under the edit. */
+    val conflicts: List<String> = emptyList(),
+    /** Keys whose rows are still dirty, which the fetch of this run must leave alone. */
+    val held: Set<String> = emptySet(),
+    /** The failure that ended step U, when one did. */
+    val error: SyncError? = null,
+    /** True when step U gave a change up, which an upload-only run is obliged to follow up. */
+    val reverted: Boolean = false,
+) {
+
+    /** This Collection's part of the run, as step U left it. */
+    fun outcome(collection: DavCollection, error: SyncError? = this.error): CollectionOutcome =
+        CollectionOutcome(
+            collection,
+            error = error,
+            uploaded = uploaded,
+            pending = pending,
+            refused = refused,
+            conflicts = conflicts,
+        )
+}
+
+/**
+ * The order step U sends a Collection's changes in: deletions first, then creates, then updates.
+ *
+ * Deletions first, so that a create never meets the name a deletion is about to free, and creates
+ * before updates, so that nothing an update refers to is missing. Within each kind the order is the
+ * mapper's — `sortedBy` is stable — so an unchanged Collection is sent in the same sequence every run.
+ */
+internal fun uploadOrder(changes: List<LocalChange>): List<LocalChange> = changes.sortedBy {
+    when (it.kind) {
+        ChangeKind.DELETE -> 0
+        ChangeKind.CREATE -> 1
+        ChangeKind.UPDATE -> 2
+    }
+}
+
+/**
+ * The key an accepted create is stored under: the path the server named the item by, or the one it
+ * was PUT to when the server named none.
+ *
+ * A `Location` outside the Collection is refused — null — rather than adopted. No listing of this
+ * Collection will ever name such a path, so a row keyed by it is one `deleteMissing` removes on the
+ * next run, and the item the server just stored comes back as a duplicate the run after that.
+ *
+ * "Outside" is judged on the origin as well as the path: a path under `/books/main/` served by
+ * another host is a different Collection that happens to be laid out alike, and a key is only ever
+ * compared against hrefs this Collection's own listing produced.
+ */
+internal fun adoptKey(requestPath: String, location: Url?, collectionUrl: Url): String? {
+    if (location == null) return requestPath
+    val sameOrigin = location.protocol == collectionUrl.protocol &&
+        location.host == collectionUrl.host &&
+        location.port == collectionUrl.port
+    if (!sameOrigin) return null
+
+    val base = collectionUrl.encodedPath.let { if (it.endsWith("/")) it else "$it/" }
+    return location.encodedPath.takeIf { it.startsWith(base) && it.length > base.length }
+}
+
+/** What step U does with the answer to one change: §2 to §4's answer tables as one decision. */
+internal sealed interface ChangeAction {
+
+    /** The server has the resource: store its identity, its ETag and the clean flag. */
+    data class MarkUploaded(val etag: String?, val location: Url?) : ChangeAction
+
+    /** The server does not have the resource, which is what a delete wanted: drop the tombstone. */
+    data object Purge : ChangeAction
+
+    /** The server's copy moved under the edit: give the local change up and let the fetch replace it. */
+    data object Revert : ChangeAction
+}
+
+/**
+ * §2 to §4's answer tables as the one function both verbs go through.
+ *
+ * 412 is the same statement for both and the policy is the same — the server's copy moved under the
+ * edit, so the local one is given up rather than retried — which is why it is one line here and not
+ * two. A DELETE's 404 is the second way a server says it does not have the item, which is what a
+ * delete wanted, so it purges like any 2xx: failing a Collection for a row the server and the phone
+ * already agree about is class 9's mistake, made on a write.
+ */
+internal fun answerOf(answer: WriteAnswer): ChangeAction = when (answer) {
+    is PutAnswer.Stored -> ChangeAction.MarkUploaded(answer.etag, answer.location)
+    DeleteAnswer.Gone -> ChangeAction.Purge
+    PutAnswer.PreconditionFailed, DeleteAnswer.PreconditionFailed -> ChangeAction.Revert
+}
+
+/** The characters a UID may be used verbatim as a file name with; anything else gets a random name. */
+private val UID_SAFE = Regex("[A-Za-z0-9._-]+")
+
+/**
+ * The path a created resource is PUT to: the Collection's own path plus `<UID>` and the extension
+ * that Collection's resources carry.
+ *
+ * [collectionPath] is the location the session's last request left rather than the URL the Account
+ * stored, because a server that redirects the Collection would otherwise have the create PUT to the
+ * path it redirected *from* — a resource no later listing of that Collection names.
+ *
+ * The name comes from the UID `serialize` minted and persisted before this request, so a retry after
+ * an answer that went missing sends the same name: a fresh one would leave the item the server did
+ * store behind as a duplicate. A UID that cannot be a file name keeps its place in the body and gets
+ * a random one here, the name being ours to choose and the UID not; that costs the guarantee for
+ * rows this app did not mint, and nothing else.
+ */
+private fun createPath(collectionPath: String, collection: DavCollection, uid: String): String {
+    val base = if (collectionPath.endsWith("/")) collectionPath else "$collectionPath/"
+    val name = if (UID_SAFE.matches(uid)) uid else UUID.randomUUID().toString()
+    return base + name + when (collection.type) {
+        CollectionType.ADDRESS_BOOK -> ".vcf"
+        CollectionType.CALENDAR -> ".ics"
+    }
+}
+
+/** The media type a Collection's resources are sent as; RFC 6350 and RFC 5545 both mandate UTF-8. */
+private fun contentTypeOf(collection: DavCollection): String = when (collection.type) {
+    CollectionType.ADDRESS_BOOK -> "text/vcard; charset=utf-8"
+    CollectionType.CALENDAR -> "text/calendar; charset=utf-8"
+}

@@ -589,6 +589,27 @@ class CollectionDiscoveryTest {
     }
 
     @Test
+    fun `a walk does not turn a writable Collection back to read-only`() {
+        // Found on a device: with writable dropped by the fold, the daily enumeration silently
+        // stopped sending a Collection's edits, and the next run reverted every pending one while
+        // the settings screen still showed the switch on.
+        val writable = collection(id = "dav-books", selected = true).copy(writable = true)
+        val asListed = collection(id = "dav-books", displayName = "Renamed on the server")
+
+        val merged = CollectionDiscovery.merge(listOf(writable), listOf(asListed))
+
+        assertEquals("Renamed on the server", merged.single().displayName)
+        assertTrue("whether edits may be sent is the user's answer, not the walk's", merged.single().writable)
+    }
+
+    @Test
+    fun `a newly discovered Collection is not writable`() {
+        val discovered = collection(id = "dav-new").copy(writable = true)
+
+        assertFalse(CollectionDiscovery.merge(emptyList(), listOf(discovered)).single().writable)
+    }
+
+    @Test
     fun `a newly discovered Collection arrives unselected and unpinned`() {
         val discovered = collection(id = "dav-new", selected = true)
 

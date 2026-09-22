@@ -1,8 +1,71 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ContactsSource xmlns:android="http://schemas.android.com/apk/res/android">
+<!--
+    The account type this app declares to the Contacts app.
+
+    <EditSchema> is the gate an editor obeys: ExternalAccountType.areContactsWritable() returns
+    mHasEditSchema, and that flag is set only by meeting this tag. Declaring it also switches off the
+    fallback kind set, which makes four kinds mandatory — the name kind supplies StructuredName and
+    the pseudo name and phonetic-name kinds, and photo is the fourth. checkKindExists throws on the
+    first one missing and leaves the account type uninitialised: invalid, not read-only. That is why
+    the name kind carries all six supports* attributes (NameKindBuilder throws on any of them false)
+    and the kinds that hold one row carry maxOccurs="1" (throwIfList).
+
+    Every kind below is one the write path serialises; a kind absent here is a field the user can
+    neither create nor edit. im, sip_address and relationship are left out for that reason: the read
+    path does not map IMPP or RELATED, and a field the upload would drop is worse than no field.
+-->
+<ContactsAccountType xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Outside the schema on purpose: this kind is shown, never edited. A kind declared here is
+         built with editable = false, so the editor does not render the row and a save leaves it
+         alone — it is the server's own resource, which the write path patches rather than replaces.
+         It must stay declared: the provider refuses an undeclared MIME type. -->
     <ContactsDataKind
         android:mimeType="vnd.android.cursor.item/vnd.xyz.satr.davprovider.vcard"
         android:icon="@drawable/ic_contact"
         android:summaryColumn="data2"
         android:detailColumn="data3" />
-</ContactsSource>
+
+    <EditSchema>
+        <DataKind kind="name" maxOccurs="1"
+            supportsPrefix="true" supportsMiddleName="true" supportsSuffix="true"
+            supportsPhoneticFamilyName="true" supportsPhoneticMiddleName="true"
+            supportsPhoneticGivenName="true" />
+        <DataKind kind="photo" maxOccurs="1" />
+        <DataKind kind="phone">
+            <Type type="mobile" />
+            <Type type="home" />
+            <Type type="work" />
+            <Type type="fax_home" />
+            <Type type="fax_work" />
+            <Type type="pager" />
+            <Type type="main" />
+            <Type type="car" />
+            <Type type="isdn" />
+            <Type type="tty_tdd" />
+            <Type type="other" />
+            <Type type="custom" />
+        </DataKind>
+        <DataKind kind="email">
+            <Type type="home" />
+            <Type type="work" />
+            <Type type="mobile" />
+            <Type type="other" />
+            <Type type="custom" />
+        </DataKind>
+        <DataKind kind="postal" needsStructured="true">
+            <Type type="home" />
+            <Type type="work" />
+            <Type type="other" />
+            <Type type="custom" />
+        </DataKind>
+        <DataKind kind="organization" maxOccurs="1" />
+        <DataKind kind="nickname" maxOccurs="1" />
+        <DataKind kind="note" maxOccurs="1" />
+        <DataKind kind="website" />
+        <DataKind kind="event">
+            <Type type="birthday" maxOccurs="1" yearOptional="true" />
+        </DataKind>
+        <DataKind kind="group_membership" maxOccurs="1" />
+    </EditSchema>
+</ContactsAccountType>

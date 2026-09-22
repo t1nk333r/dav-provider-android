@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- supportsUploading="false" is the read-only declaration: stock editors refuse
-     edits up front and the framework never requests upload-only syncs. -->
+<!-- supportsUploading="true" is what the framework reads: it now asks for an upload-only sync when
+     a provider reports a dirtying write. It is not what a stock editor consults — the Contacts app
+     offers this account in "Save contact to" because res/xml/contacts.xml declares an <EditSchema>. -->
 <sync-adapter xmlns:android="http://schemas.android.com/apk/res/android"
     android:contentAuthority="com.android.contacts"
     android:accountType="xyz.satr.davprovider"
     android:userVisible="true"
-    android:supportsUploading="false"
+    android:supportsUploading="true"
     android:allowParallelSyncs="false"
     android:isAlwaysSyncable="true"
     android:settingsActivity="xyz.satr.davprovider.ui.SettingsActivity" />

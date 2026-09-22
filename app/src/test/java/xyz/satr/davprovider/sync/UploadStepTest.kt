@@ -138,4 +138,17 @@ class UploadStepTest {
         assertTrue("a create stays dirty so a writable Collection can still take it",
             revertibleOnRefusal(creates).isEmpty())
     }
+
+    @Test
+    fun `a stored ETag is the opaque value, whatever spelling it arrived in`() {
+        // A PUT's header is quoted, a listing's getetag is not. Stored as it arrived, the next
+        // listing compares "abc" against abc, sees a change nobody made, and downloads the resource
+        // this run just uploaded — over any edit made in the seconds since.
+        assertEquals("abc", storedEtag("\"abc\""))
+        assertEquals("abc", storedEtag("abc"))
+        assertEquals("abc", storedEtag("W/\"abc\""))
+        assertEquals("abc", storedEtag("  \"abc\"  "))
+        assertNull(storedEtag(null))
+        assertNull(storedEtag("\"\""))
+    }
 }

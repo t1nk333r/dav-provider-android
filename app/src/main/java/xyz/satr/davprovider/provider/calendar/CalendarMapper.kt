@@ -405,7 +405,17 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
                     .withValues(master)
                     .build(),
                 ContentProviderOperation.newUpdate(eventsUri(account))
-                    .withSelection(resourceSelection(calendarId, change), resourceArgs(calendarId, change))
+                    // The master is excluded by row id, not by hoping the selection misses it.
+                    // [resourceSelection] matches the whole resource — master included — and these
+                    // values are the overrides': they null the stored source and set
+                    // ORIGINAL_SYNC_ID. Applied to the master they erase the base every later patch
+                    // starts from and make it look like an override to [pendingPlan], which then
+                    // never queues it again. It survived testing only because the same run's
+                    // listing usually re-fetched the resource and wrote the rows back.
+                    .withSelection(
+                        "${resourceSelection(calendarId, change)} AND ${Events._ID}!=?",
+                        resourceArgs(calendarId, change) + change.rowId.toString(),
+                    )
                     .withValues(overrides)
                     .build(),
             ),

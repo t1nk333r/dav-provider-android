@@ -597,8 +597,16 @@ class SyncEngine(
                                     continue
                                 }
 
+                                // A 2xx that named no ETag leaves the row with nothing the next
+                                // listing can compare, so the item this run just sent is fetched
+                                // straight back. One PROPFIND is cheaper than that download, and it
+                                // closes the window where the fetch overwrites an edit made in the
+                                // seconds since. A server with no ETag for it either leaves null,
+                                // which is the path an ETag-less item already takes.
+                                val etag = action.etag ?: session.etagOf(key)
+
                                 val stored = mapper.markUploaded(
-                                    account, collection, change, key, body.uid, action.etag, body.text,
+                                    account, collection, change, key, body.uid, etag, body.text,
                                 )
                                 if (stored) {
                                     uploaded++
@@ -616,7 +624,13 @@ class SyncEngine(
                                 // realistic 412 on a create is this app's own answer going missing,
                                 // and retrying under a fresh name would leave the item the server did
                                 // store behind as a duplicate.
-                                mapper.revertLocalChange(account, collection, change)
+                                //
+                                // A create is reverted under the name it was PUT to, not under its
+                                // own null key: the row has to carry that key before the listing
+                                // runs, or nothing links the row to the resource the server already
+                                // holds and the fetch inserts it a second time.
+                                val reverting = if (creating) change.copy(key = target) else change
+                                mapper.revertLocalChange(account, collection, reverting)
                                 conflicts += (change.key ?: target)
                                 reverted = true
                             }
@@ -632,7 +646,14 @@ class SyncEngine(
 
                 // Retryable: the listing would meet the same wall, so the Collection ends here and
                 // every change that was not sent — this one included — stays DIRTY for the next run.
-                if (error.errorClass.retryable)
+                //
+                // Terminal too, and for a sharper reason: a credential failure, a certificate that
+                // is gone or a proxy standing in the way is not this item's problem, and swallowing
+                // it here would report a run that could not authenticate as a Collection with a
+                // pending edit. The classes that stay per-item are the ones that are genuinely about
+                // the body sent — the server refusing this method or this content, and the DAV
+                // condition it answered with.
+                if (error.errorClass.retryable || error.errorClass.terminal)
                     return Uploads(
                         uploaded = uploaded,
                         pending = pending + (changes.size - index),
@@ -641,8 +662,8 @@ class SyncEngine(
                         error = error,
                     )
 
-                // Not retryable, so asking again would get the same answer: the row stays DIRTY and
-                // the run carries on to the listing.
+                // The server will answer the same way next time, and it answered about this body:
+                // the row stays DIRTY, is counted pending, and the run carries on to the listing.
                 pending++
                 change.key?.let { held += it }
             }

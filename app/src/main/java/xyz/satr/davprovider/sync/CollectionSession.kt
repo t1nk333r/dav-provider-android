@@ -273,7 +273,7 @@ internal class CollectionSession(
                 headers,
             ) { response ->
                 PutAnswer.Stored(
-                    etag = response.headers[HttpHeaders.ETag],
+                    etag = storedEtag(response.headers[HttpHeaders.ETag]),
                     location = locationOf(response.headers[HttpHeaders.Location], resource.location),
                 )
             }
@@ -313,6 +313,31 @@ internal class CollectionSession(
             DeleteAnswer.PreconditionFailed
         }
         // [location] is left where it was, for the reason given in [put].
+    }
+
+    /**
+     * The ETag of one member, asked for when a `PUT` was accepted without naming it.
+     *
+     * RFC 9110 does not oblige a server to answer a write with an `ETag`, and Radicale is not the
+     * only one that sometimes does not. Storing null instead costs a download: the listing cannot
+     * compare a null against what the server reports, so the item this run just uploaded is fetched
+     * straight back, and an edit made in the seconds between is overwritten by the body the server
+     * already has. One extra `PROPFIND Depth: 0` buys that back.
+     *
+     * Null when the server has no ETag for it either — then the row keeps a null and takes the same
+     * path an ETag-less item has always taken.
+     */
+    suspend fun etagOf(href: String): String? {
+        onOperationStart()
+        val resource = resourceAt(href)
+        lastMethod = "PROPFIND"
+
+        var etag: String? = null
+        resource.propfind(0, WebDAV.GetETag).collect { item ->
+            if (item is MultiStatusItem.Response && item.response.isSuccess())
+                etag = item.response[GetETag::class.java]?.eTag
+        }
+        return storedEtag(etag)
     }
 
     /**
@@ -490,6 +515,22 @@ internal class Members {
  * Either spelling counts: the status on its own, which is what RFC 4918 gives it, or the condition,
  * which some servers send under a 200 for the Collection itself.
  */
+/**
+ * An ETag as a row stores it: the opaque value, without the quotes or the weak marker.
+ *
+ * The two sources disagree on spelling. A `PUT`'s `ETag` header arrives as the wire spells it,
+ * quoted; the listing's `getetag` is parsed out of XML with the quotes already stripped. Store the
+ * quoted form and the next listing compares `"abc"` against `abc`, finds a difference that is not
+ * there, and downloads the resource this run has just uploaded — overwriting, in the seconds
+ * between, any edit the user made after it was sent. Normalising here is what makes the two
+ * comparable; [entityTag] puts the quotes back on the way out.
+ */
+internal fun storedEtag(value: String?): String? {
+    val trimmed = value?.trim()?.removePrefix("W/")?.trim() ?: return null
+    if (trimmed.isEmpty()) return null
+    return trimmed.removeSurrounding("\"").ifEmpty { null }
+}
+
 private fun DavResponse.isTruncation(): Boolean =
     status?.value == TRUNCATED_STATUS ||
         error?.any { it.name == NUMBER_OF_MATCHES_WITHIN_LIMITS } == true

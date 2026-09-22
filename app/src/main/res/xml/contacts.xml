@@ -1,43 +1,51 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    The account type this app declares to the Contacts app.
+    The account type this app declares to a Contacts app.
 
     <EditSchema> is the gate an editor obeys: ExternalAccountType.areContactsWritable() returns
     mHasEditSchema, and that flag is set only by meeting this tag. Declaring it also switches off the
     fallback kind set, which makes four kinds mandatory — the name kind supplies StructuredName and
     the pseudo name and phonetic-name kinds, and photo is the fourth. checkKindExists throws on the
-    first one missing and leaves the account type uninitialised: invalid, not read-only. That is why
-    the name kind carries all six supports* attributes (NameKindBuilder throws on any of them false)
-    and the kinds that hold one row carry maxOccurs="1" (throwIfList).
+    first one missing and leaves the account type uninitialised: invalid, not read-only.
 
-    Every kind below is one the write path serialises; a kind absent here is a field the user can
-    neither create nor edit. im, sip_address and relationship are left out for that reason: the read
-    path does not map IMPP or RELATED, and a field the upload would drop is worse than no field.
+    supportsDisplayName is load-bearing and AOSP will not tell you so. Current AOSP reads six
+    supports* attributes on the name kind and checks each is true; Samsung's fork reads
+    supportsDisplayName as well and throws without it. The account type then fails to initialise and
+    the account is simply absent from "Save contact to", with the reason only in logcat:
+
+        ExternalAccountType: Metadata loaded from: xyz.satr.davprovider, …ContactsSyncService
+        AccountTypeLoader: addSyncable FAIL: account not initialized: xyz.satr.davprovider
+
+    Found on a Galaxy S24 by bisecting this file against the one DAVx5 ships, which carries all
+    eight. Google Contacts accepts the six-attribute form, so an emulator will not reproduce it.
+
+    Every kind below is one the write path serialises. A kind declared here that the upload cannot
+    carry is a field the user can type into and lose, which is why im, sip_address and relationship
+    are left out: the read path maps neither IMPP nor RELATED.
 -->
 <ContactsAccountType xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Outside the schema on purpose: this kind is shown, never edited. A kind declared here is
-         built with editable = false, so the editor does not render the row and a save leaves it
-         alone — it is the server's own resource, which the write path patches rather than replaces.
-         It must stay declared: the provider refuses an undeclared MIME type. -->
-    <ContactsDataKind
-        android:mimeType="vnd.android.cursor.item/vnd.xyz.satr.davprovider.vcard"
-        android:icon="@drawable/ic_contact"
-        android:summaryColumn="data2"
-        android:detailColumn="data3" />
-
     <EditSchema>
-        <DataKind kind="name" maxOccurs="1"
-            supportsPrefix="true" supportsMiddleName="true" supportsSuffix="true"
-            supportsPhoneticFamilyName="true" supportsPhoneticMiddleName="true"
-            supportsPhoneticGivenName="true" />
+        <DataKind
+            kind="name"
+            maxOccurs="1"
+            supportsDisplayName="true"
+            supportsFamilyName="true"
+            supportsMiddleName="true"
+            supportsPhoneticFamilyName="true"
+            supportsPhoneticGivenName="true"
+            supportsPhoneticMiddleName="true"
+            supportsPrefix="true"
+            supportsSuffix="true" />
+
         <DataKind kind="photo" maxOccurs="1" />
+
         <DataKind kind="phone">
             <Type type="mobile" />
             <Type type="home" />
             <Type type="work" />
-            <Type type="fax_home" />
             <Type type="fax_work" />
+            <Type type="fax_home" />
             <Type type="pager" />
             <Type type="main" />
             <Type type="car" />
@@ -46,6 +54,7 @@
             <Type type="other" />
             <Type type="custom" />
         </DataKind>
+
         <DataKind kind="email">
             <Type type="home" />
             <Type type="work" />
@@ -53,19 +62,36 @@
             <Type type="other" />
             <Type type="custom" />
         </DataKind>
+
         <DataKind kind="postal" needsStructured="true">
             <Type type="home" />
             <Type type="work" />
             <Type type="other" />
             <Type type="custom" />
         </DataKind>
+
         <DataKind kind="organization" maxOccurs="1" />
+
         <DataKind kind="nickname" maxOccurs="1" />
+
         <DataKind kind="note" maxOccurs="1" />
+
         <DataKind kind="website" />
-        <DataKind kind="event">
-            <Type type="birthday" maxOccurs="1" yearOptional="true" />
-        </DataKind>
+
+        <!-- maxOccurs=1 on a group membership is required, not a choice: the kind's own parser
+             throws for a list. -->
         <DataKind kind="group_membership" maxOccurs="1" />
+
+        <DataKind kind="event" dateWithTime="false">
+            <Type maxOccurs="1" type="birthday" yearOptional="true" />
+        </DataKind>
     </EditSchema>
+
+    <!-- Outside the schema on purpose: this kind is shown, never edited. It is the server's own
+         resource, which the write path patches rather than replaces. -->
+    <ContactsDataKind
+        android:mimeType="vnd.android.cursor.item/vnd.xyz.satr.davprovider.vcard"
+        android:icon="@drawable/ic_contact"
+        android:summaryColumn="data2"
+        android:detailColumn="data3" />
 </ContactsAccountType>

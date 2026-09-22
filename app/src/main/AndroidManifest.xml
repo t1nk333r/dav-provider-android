@@ -62,6 +62,16 @@
             <meta-data
                 android:name="android.accounts.AccountAuthenticator"
                 android:resource="@xml/authenticator" />
+            <!--
+              Declared here as well as on the contacts sync-adapter service. AOSP's
+              ExternalAccountType.loadContactsXml queries services answering
+              android.content.SyncAdapter and takes the first CONTACTS_STRUCTURE it finds, so the
+              sync-adapter service is enough there; an OEM fork that looks at the authenticator
+              instead finds nothing. Declaring it twice costs one metadata entry.
+            -->
+            <meta-data
+                android:name="android.provider.CONTACTS_STRUCTURE"
+                android:resource="@xml/contacts" />
         </service>
 
         <!-- Sync adapter: contacts authority -->

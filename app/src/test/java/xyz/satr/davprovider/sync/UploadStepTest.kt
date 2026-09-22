@@ -3,6 +3,7 @@ package xyz.satr.davprovider.sync
 import io.ktor.http.Url
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import xyz.satr.davprovider.core.ChangeKind
 import xyz.satr.davprovider.core.LocalChange
@@ -111,5 +112,30 @@ class UploadStepTest {
         // the item the server already stored.
         assertEquals(ChangeAction.Revert, answerOf(PutAnswer.PreconditionFailed))
         assertEquals(ChangeAction.Revert, answerOf(DeleteAnswer.PreconditionFailed))
+    }
+
+    @Test
+    fun `a read-only Collection reverts edits but never a create`() {
+        // Found on a device: a contact saved through "Save contact to" was made in the editor,
+        // refused because the Collection was read-only, and had its DIRTY flag cleared with it.
+        // There is no server copy of a create for the run's fetch to put back, so clearing the flag
+        // does not revert the contact — it strands it, and no later run looks at it again.
+        val changes = listOf(
+            LocalChange(rowId = 1, kind = ChangeKind.DELETE, key = "/books/main/gone.vcf"),
+            LocalChange(rowId = 2, kind = ChangeKind.CREATE),
+            LocalChange(rowId = 3, kind = ChangeKind.UPDATE, key = "/books/main/edited.vcf"),
+        )
+
+        val revertible = revertibleOnRefusal(changes)
+
+        assertEquals(listOf(1L, 3L), revertible.map { it.rowId })
+    }
+
+    @Test
+    fun `a refusal of nothing but creates reverts nothing`() {
+        val creates = listOf(LocalChange(rowId = 7, kind = ChangeKind.CREATE))
+
+        assertTrue("a create stays dirty so a writable Collection can still take it",
+            revertibleOnRefusal(creates).isEmpty())
     }
 }

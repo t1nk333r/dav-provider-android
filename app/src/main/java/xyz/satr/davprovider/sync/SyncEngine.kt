@@ -240,6 +240,13 @@ class SyncEngine(
             http.close()
         }
 
+        // An upload-only run that found no writable Collection visited nothing, learned nothing and
+        // has nothing to say. Reporting it would overwrite the account's status with a clean "no
+        // Collections are selected" — which is how a refusal came to be hidden: the framework starts
+        // one of these the moment a provider goes dirty, so it lands moments after the periodic run
+        // that refused the edit and speaks last.
+        if (uploadOnly && outcomes.isEmpty() && !aborted) return
+
         report(account, outcomes, aborted = aborted, error = null, automatic = automatic)
     }
 
@@ -486,20 +493,23 @@ class SyncEngine(
     ): Uploads {
         val changes = uploadOrder(mapper.pendingChanges(account, collection))
 
-        // §7: a Collection the user has not made writable is refused rather than uploaded. Every
-        // pending change is given up here, which is the narrow successor of the §7 backstop — DIRTY
-        // is cleared only for rows whose Collection the user has said may not be written, and the
-        // fetch that follows in this same run makes the revert visible within the interval. A created
-        // contact has nowhere to be fetched onto and is the mapper's to leave dirty; it is counted
-        // pending on the run that finds it again.
+        // §7: a Collection the user has not made writable is refused rather than uploaded. An edit
+        // to a resource the server already has is given up here — the narrow successor of the §7
+        // backstop — and the fetch that follows in this same run makes the revert visible.
+        //
+        // A create is the exception, and it is not a small one. A contact made in the editor exists
+        // nowhere else: there is no server copy for the fetch to put back, so clearing its DIRTY
+        // flag does not revert it, it strands it — the contact stays on the phone with nothing left
+        // to say it was never sent. Found on a device: a contact saved through "Save contact to"
+        // went quiet exactly this way, because `writable` is off by default and every run cleared
+        // the flag again. It stays dirty and is counted refused on every run until a Collection can
+        // take it.
         if (!collection.writable) {
-            var refused = 0
-            for (change in changes) {
+            for (change in revertibleOnRefusal(changes)) {
                 ensureAccountRegistered(account)
                 mapper.revertLocalChange(account, collection, change)
-                refused++
             }
-            return Uploads(refused = refused, reverted = refused > 0)
+            return Uploads(refused = changes.size, reverted = changes.isNotEmpty())
         }
 
         var uploaded = 0
@@ -868,6 +878,21 @@ internal fun uploadOrder(changes: List<LocalChange>): List<LocalChange> = change
         ChangeKind.UPDATE -> 2
     }
 }
+
+/**
+ * Of the changes a read-only Collection refuses, the ones that may be given up.
+ *
+ * An update or a deletion has a server copy behind it, so clearing the local change is a revert:
+ * the run's own fetch puts the server's version back and the user sees their edit undone, which is
+ * what "read-only" promised.
+ *
+ * A create has no such copy. Clearing its flag does not undo anything — it only removes the single
+ * piece of state that said the contact had never been sent, leaving it on the phone where no run
+ * will look at it again. It is refused and left dirty instead, so making a Collection writable
+ * later is all it takes to send it.
+ */
+internal fun revertibleOnRefusal(changes: List<LocalChange>): List<LocalChange> =
+    changes.filter { it.kind != ChangeKind.CREATE }
 
 /**
  * The key an accepted create is stored under: the path the server named the item by, or the one it

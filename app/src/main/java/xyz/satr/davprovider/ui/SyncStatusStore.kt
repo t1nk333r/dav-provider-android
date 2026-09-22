@@ -71,12 +71,21 @@ internal data class AccountReport(
     val composedStatus: AccountStatus
         get() = authorities.values.maxByOrNull { it.status.severity }?.status ?: status
 
-    /** The reason to display: the failing authority's, which the last run may not be. */
+    /**
+     * The reason to display: the failing authority's, which the last run may not be.
+     *
+     * An authority that ended OK can still have something to say — refused edits are the case, and
+     * the only one: nothing failed, nothing is left to retry, and yet edits did not leave the
+     * phone. Falling straight through to [summary] let a clean calendar run hide a contacts run
+     * that refused a contact the user had just made, which read as "All Collections synced" over a
+     * contact that was never sent.
+     */
     val composedSummary: String?
         get() = authorities.values
             .filter { it.status.severity > AccountStatus.OK.severity }
             .maxByOrNull { it.status.severity }
             ?.summary
+            ?: authorities.values.mapNotNull { it.summary }.firstOrNull()
             ?: summary
 }
 

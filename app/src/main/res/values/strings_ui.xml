@@ -93,8 +93,8 @@
     <string name="status_detail_partial">%1$d of %2$d Collections failed</string>
     <string name="status_detail_failed">All %1$d Collections failed</string>
     <plurals name="status_detail_refused">
-        <item quantity="one">1 edit was refused: its Collection is read-only</item>
-        <item quantity="other">%1$d edits were refused: their Collections are read-only</item>
+        <item quantity="one">1 edit was refused: its Collection is read-only. Turn its write switch on and the next sync sends it.</item>
+        <item quantity="other">%1$d edits were refused: their Collections are read-only. Turn their write switches on and the next sync sends them.</item>
     </plurals>
     <string name="status_detail_never_synced">No sync has run for this account</string>
     <string name="last_sync">Last sync: %1$s</string>
@@ -179,8 +179,8 @@
         <item quantity="other">%1$d edits were replaced by the server\'s version: the server\'s copies had changed, so the edits here were given up</item>
     </plurals>
     <plurals name="log_collection_refused">
-        <item quantity="one">1 edit was refused: this Collection is read-only, so nothing here is sent to the server</item>
-        <item quantity="other">%1$d edits were refused: this Collection is read-only, so nothing here is sent to the server</item>
+        <item quantity="one">1 edit was refused: this Collection is read-only. Turn on “Send edits made on this phone to the server” for it, and the next sync sends the edit.</item>
+        <item quantity="other">%1$d edits were refused: this Collection is read-only. Turn on “Send edits made on this phone to the server” for it, and the next sync sends them.</item>
     </plurals>
     <plurals name="log_run_uploaded">
         <item quantity="one">ok (sent 1 edit to the server)</item>

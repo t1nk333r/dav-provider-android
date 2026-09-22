@@ -213,9 +213,16 @@ internal class UiSyncReporter(context: Context) : SyncReporter {
                 report.collections.size,
             )
             sent > 0 -> quantity(R.plurals.log_run_uploaded, sent)
+            // Nothing failed and nothing is left to retry, but edits did not leave the phone, and a
+            // bare "ok" over a contact the user has just made is the silence this app exists to
+            // avoid. Said here as well as on the Collection's own line, because the run line is the
+            // one a reader skims.
+            refusedIn(report) > 0 -> quantity(R.plurals.status_detail_refused, refusedIn(report))
             else -> appContext.getString(R.string.log_collection_ok)
         }
     }
+
+    private fun refusedIn(report: AccountSyncReport): Int = report.collections.sumOf { it.refused }
 }
 
 /**

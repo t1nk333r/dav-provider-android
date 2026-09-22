@@ -1,7 +1,14 @@
-# dav-provider-android
+# DAVKeep
+
+[davkeep.app](https://davkeep.app) · Android only
 
 An Android CalDAV/CardDAV sync provider that can attach **arbitrary HTTP headers**
 and/or a **client certificate** per account.
+
+The application id is `app.davkeep`. It was `xyz.satr.davprovider` up to 0.4.4:
+Android binds every synced row to the account type, so the rename ships as a
+separate app rather than an update. Export the accounts from the old one, import
+them into this one, then uninstall the old one.
 
 It syncs: an account configured with only a client certificate pulled **368 contacts**
 and **13 events** from a real server behind a certificate-gated proxy into the Android

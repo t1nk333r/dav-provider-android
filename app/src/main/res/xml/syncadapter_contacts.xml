@@ -4,9 +4,9 @@
      offers this account in "Save contact to" because res/xml/contacts.xml declares an <EditSchema>. -->
 <sync-adapter xmlns:android="http://schemas.android.com/apk/res/android"
     android:contentAuthority="com.android.contacts"
-    android:accountType="xyz.satr.davprovider"
+    android:accountType="app.davkeep"
     android:userVisible="true"
     android:supportsUploading="true"
     android:allowParallelSyncs="false"
     android:isAlwaysSyncable="true"
-    android:settingsActivity="xyz.satr.davprovider.ui.SettingsActivity" />
+    android:settingsActivity="app.davkeep.ui.SettingsActivity" />

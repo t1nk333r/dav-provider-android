@@ -13,8 +13,8 @@
     supportsDisplayName as well and throws without it. The account type then fails to initialise and
     the account is simply absent from "Save contact to", with the reason only in logcat:
 
-        ExternalAccountType: Metadata loaded from: xyz.satr.davprovider, …ContactsSyncService
-        AccountTypeLoader: addSyncable FAIL: account not initialized: xyz.satr.davprovider
+        ExternalAccountType: Metadata loaded from: app.davkeep, …ContactsSyncService
+        AccountTypeLoader: addSyncable FAIL: account not initialized: app.davkeep
 
     Found on a Galaxy S24 by bisecting this file against the one DAVx5 ships, which carries all
     eight. Google Contacts accepts the six-attribute form, so an emulator will not reproduce it.
@@ -90,7 +90,7 @@
     <!-- Outside the schema on purpose: this kind is shown, never edited. It is the server's own
          resource, which the write path patches rather than replaces. -->
     <ContactsDataKind
-        android:mimeType="vnd.android.cursor.item/vnd.xyz.satr.davprovider.vcard"
+        android:mimeType="vnd.android.cursor.item/vnd.app.davkeep.vcard"
         android:icon="@drawable/ic_contact"
         android:summaryColumn="data2"
         android:detailColumn="data3" />

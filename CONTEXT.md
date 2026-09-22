@@ -1,4 +1,4 @@
-# DAV Provider
+# DAVKeep
 
 An Android sync provider that syncs contacts and calendars from a CalDAV/CardDAV server into the platform providers, where the server is reached through an identity-aware proxy that requires custom HTTP headers or a client certificate.
 

@@ -14,19 +14,19 @@ val keystoreProperties = Properties().apply {
 }
 
 android {
-    namespace = "xyz.satr.davprovider"
+    namespace = "app.davkeep"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "xyz.satr.davprovider"
+        applicationId = "app.davkeep"
         minSdk = 24
         targetSdk = 36
         // Bumped on every build that produces an APK — see AGENTS.md, "Versioning". A build whose
         // code is unchanged but whose version is not tells you nothing about which APK is on the
         // phone, and Android refuses to install one whose versionCode goes backwards, so this only
         // ever increases.
-        versionCode = 44
-        versionName = "0.4.4"
+        versionCode = 45
+        versionName = "0.5.0"
     }
 
     compileOptions {

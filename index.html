@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>DAVKeep — CalDAV/CardDAV sync for servers behind a gate</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="An Android sync provider for CalDAV and CardDAV servers reached through an identity-aware proxy: per-account HTTP headers and client-certificate (mTLS) authentication.">
+<meta property="og:title" content="DAVKeep">
+<meta property="og:description" content="Contacts and calendars from your own server, through a gate only your key opens.">
+<meta property="og:url" content="https://davkeep.app/">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+  :root { --bg:#0D0E12; --ink:#C7B9FF; --text:#E6E0E9; --dim:#9A93A6; --line:#26242C;
+          --err:#F85149; --warn:#E3B341; --ok:#3FB950; }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.65 ui-sans-serif,system-ui,"Segoe UI",Roboto,sans-serif; }
+  main { max-width:44rem; margin:0 auto; padding:4rem 1.25rem 6rem }
+  .mark { width:84px; height:84px; color:var(--ink); display:block }
+  h1 { font-size:2.5rem; margin:1.25rem 0 .25rem; letter-spacing:-.02em }
+  .tag { color:var(--ink); margin:0 0 2rem; font-size:1.15rem }
+  h2 { font-size:1.05rem; margin:2.75rem 0 .75rem; letter-spacing:.06em; text-transform:uppercase; color:var(--dim) }
+  p { margin:0 0 1rem }
+  ul { margin:0 0 1rem; padding-left:1.1rem } li { margin:.35rem 0 }
+  code, kbd { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.92em;
+              background:#16151C; border:1px solid var(--line); border-radius:.35rem; padding:.1rem .35rem }
+  a { color:var(--ink) } a:hover { color:#fff }
+  .row { display:flex; gap:.6rem; flex-wrap:wrap; margin:1.5rem 0 }
+  .btn { display:inline-block; padding:.6rem 1.1rem; border-radius:.6rem; text-decoration:none;
+         border:1px solid var(--line); color:var(--text) }
+  .btn.primary { background:var(--ink); color:#12101A; border-color:var(--ink); font-weight:600 }
+  .log { background:#16151C; border:1px solid var(--line); border-radius:.6rem; padding:.9rem 1rem;
+         overflow-x:auto; font-family:ui-monospace,monospace; font-size:.84rem; line-height:1.7; color:var(--dim) }
+  .log b { color:var(--text); font-weight:500 }
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
+  footer { margin-top:4rem; padding-top:1.5rem; border-top:1px solid var(--line); color:var(--dim); font-size:.9rem }
+</style>
+<main>
+  <svg viewBox="0 0 108 108" class="mark" role="img" aria-label="DAVKeep"><path d="M31.855,56.637 A13.000,13.000 0 0 1 48.302,39.732 A16.000,16.000 0 1 1 75.695,56.272 A11.000,11.000 0 0 1 69.000,76.000 L39.000,76.000 A11.000,11.000 0 0 1 31.855,56.637 Z M37.170,56.004 A9.880,9.880 0 0 1 49.669,43.157 A12.160,12.160 0 1 1 70.489,55.727 A8.360,8.360 0 0 1 65.400,70.720 L42.600,70.720 A8.360,8.360 0 0 1 37.170,56.004 Z" fill="currentColor" fill-rule="evenodd"/><path d="M48.56 64.03Q48.56 68.50 43.86 68.50H39.99V59.56H43.86Q48.56 59.56 48.56 64.03ZM42.86 66.36H43.81Q45.62 66.36 45.62 64.42V63.64Q45.62 61.70 43.81 61.70H42.86Z" fill="currentColor"/><path d="M55.90 68.50 55.52 67.24H52.39L52.01 68.50H49.07L52.34 59.56H55.68L58.94 68.50ZM52.99 65.24H54.92L53.99 62.05H53.93Z" fill="currentColor"/><path d="M62.25 68.50 59.08 59.56H62.15L63.94 65.54H63.99L65.80 59.56H68.74L65.58 68.50Z" fill="currentColor"/></svg>
+  <h1>DAVKeep</h1>
+  <p class="tag">Contacts and calendars from your own server — through a gate only your key opens.</p>
+
+  <p>DAVKeep is an Android sync provider for <b>CalDAV</b> and <b>CardDAV</b>. It fills the phone's own
+  Contacts and Calendar apps, so everything that reads them reads your server. There is no separate
+  address book to learn and nothing to open.</p>
+
+  <p>It exists for one case the usual clients do not cover: a DAV server behind an
+  <b>identity-aware proxy</b>. Each account can carry its own HTTP headers — a Cloudflare Access
+  service token, say — and its own <b>client certificate</b>, from the Android KeyChain or imported
+  from a <code>.p12</code>.</p>
+
+  <h2>What it does</h2>
+  <ul>
+    <li>Two-way sync: an edit made in the stock Contacts or Calendar app reaches the server.</li>
+    <li>Per-account custom headers and mTLS, including servers that demand both.</li>
+    <li>Write-back that patches the server's own vCard or <code>.ics</code>, so properties Android
+        cannot model — <code>X-</code> fields, <code>VTIMEZONE</code>, alarms it does not understand —
+        survive an edit that never touched them.</li>
+    <li>A Collection is read-only until you say otherwise.</li>
+  </ul>
+
+  <h2>It tells you when it fails</h2>
+  <p>Silent failure is the thing this app is built against. Every run says what it did, in words, and
+  a sync that could not finish never claims it did:</p>
+  <div class="log">
+<span class="ok">ok</span>  written=1  deleted=0  uploaded=1  <b>sent 1 edit to the server</b><br>
+<span class="warn">WARN</span>  <b>1 edit was replaced by the server's version</b>: the server's copy had changed<br>
+<span class="err">ERROR</span>  <b>the server cut the listing short</b>: nothing was deleted, and nothing was recorded
+  </div>
+
+  <h2>Get it</h2>
+  <div class="row">
+    <a class="btn primary" href="https://github.com/t1nk333r/davkeep/releases">Releases</a>
+    <a class="btn" href="https://github.com/t1nk333r/davkeep">Source</a>
+    <a class="btn" href="https://github.com/t1nk333r/davkeep/issues">Issues</a>
+  </div>
+  <p>Android 7.0 and later. Sideload the APK; there is no Play listing.</p>
+
+  <footer>
+    Application id <code>app.davkeep</code>. Free software, developed in the open.
+  </footer>
+</main>
+</html>

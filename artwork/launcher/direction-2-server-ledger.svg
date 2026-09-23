@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108">
+  <title>Server ledger</title>
+  <desc>A server drawer and a two-panel personal ledger become one self-hosted appliance.</desc>
+  <rect width="108" height="108" fill="#17324A"/>
+  <path fill="#E7DCC8" fill-rule="evenodd" d="M33 20H75A11 11 0 0 1 86 31V78A10 10 0 0 1 76 88H32A10 10 0 0 1 22 78V31A11 11 0 0 1 33 20ZM31 29H65V34H31ZM75 29A2.5 2.5 0 1 0 75 34A2.5 2.5 0 1 0 75 29ZM28 43H49V48H28ZM59 43H80V48H59ZM39 55A4.5 4.5 0 1 0 39 64A4.5 4.5 0 1 0 39 55ZM30 75.5C31 68.8 34.2 66 39 66C43.8 66 47 68.8 48 75.5ZM60 55H78V59H60ZM60 64H66V70H60ZM72 64H78V70H72ZM60 75H66V81H60ZM72 75H78V81H72Z"/>
+</svg>

@@ -1,0 +1,31 @@
+# Draft of the fdroiddata recipe for DAVKeep, kept here so the merge request is a copy
+# rather than a rewrite. Upstream path: metadata/app.davkeep.yml in gitlab.com/fdroid/fdroiddata.
+#
+# `commit` must be the full hash or the signed tag of the release being built; F-Droid builds from
+# source and signs with its own key, so an F-Droid install and a GitHub/Obtainium install of the
+# same version are different signatures and cannot replace one another.
+
+Categories:
+  - Internet
+License: GPL-3.0-or-later
+AuthorName: t1nk333r
+WebSite: https://davkeep.app
+SourceCode: https://github.com/t1nk333r/davkeep
+IssueTracker: https://github.com/t1nk333r/davkeep/issues
+Changelog: https://github.com/t1nk333r/davkeep/releases
+
+RepoType: git
+Repo: https://github.com/t1nk333r/davkeep.git
+
+Builds:
+  - versionName: 0.6.0
+    versionCode: 48
+    commit: v0.6.0
+    subdir: app
+    gradle:
+      - yes
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags
+CurrentVersion: 0.6.0
+CurrentVersionCode: 48

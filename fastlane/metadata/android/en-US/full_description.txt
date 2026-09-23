@@ -1,0 +1,22 @@
+DAVKeep syncs contacts and calendars from a CalDAV/CardDAV server into Android's
+own Contacts and Calendar apps — including servers that a normal client cannot
+reach, because they sit behind a gateway that demands more than a password.
+
+Per account, DAVKeep can send:
+
+* arbitrary HTTP headers, for a proxy that wants an authorization header, a
+  Cloudflare Access service token, or any other header your gateway requires
+* a client certificate (mTLS), chosen from the Android key store, for a server
+  that asks for one during the TLS handshake
+
+Everything else is an ordinary DAV client: discovery of the collections an
+account can see, two-way sync of contacts and events, per-collection control of
+what syncs, and per-collection control of whether edits made on the phone are
+sent back to the server. Sending edits is off until you turn it on, one
+collection at a time, so a server can never be written to by accident.
+
+What DAVKeep does not do: no ads, no analytics, no crash reporting, no account
+of ours, no update check. It talks to the servers you configure and to nothing
+else. Credentials and certificates stay on the device.
+
+Free software, GPL-3.0-or-later.

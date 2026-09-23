@@ -94,3 +94,10 @@ attributable to the credential rather than to the proxy ignoring unfamiliar meth
 ## Repo conventions
 
 Agent/tooling conventions live in [`AGENTS.md`](./AGENTS.md) and `docs/agents/`.
+
+## Licence
+
+GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+The app talks only to the servers you configure: no analytics, no ads, no
+update check, no network use that you did not ask for.

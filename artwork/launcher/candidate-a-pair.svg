@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108">
+  <title>Candidate A — pair</title>
+  <desc>A contact and a calendar page, side by side, in one flat colour.</desc>
+  <rect width="108" height="108" fill="#F3E7D3"/>
+  <g fill="#14332E">
+    <circle cx="37" cy="49" r="9"/>
+    <path d="M24,77 V74 A13,12 0 0 1 50,74 V77 Z"/>
+    <path d="M58,38 h5 v-6 h7 v6 h2 v-6 h7 v6 h5 V72 A5,5 0 0 1 79,77 H63 A5,5 0 0 1 58,72 Z"/>
+  </g>
+</svg>

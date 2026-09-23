@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108">
+  <title>Candidate C — box</title>
+  <desc>The server you run, with a contact and a calendar cut into it.</desc>
+  <rect width="108" height="108" fill="#F3E7D3"/>
+  <path fill="#14332E" fill-rule="evenodd" d="M38,26 H70 A16,16 0 0 1 86,42 V66 A16,16 0 0 1 70,82 H38 A16,16 0 0 1 22,66 V42 A16,16 0 0 1 38,26 Z M31.5,46 A8.5,8.5 0 1 0 48.5,46 A8.5,8.5 0 1 0 31.5,46 Z M28,71 V69 A12,11 0 0 1 52,69 V71 Z M58,40 H62 V34 H68 V40 H70 V34 H76 V40 H80 V66 A5,5 0 0 1 75,71 H63 A5,5 0 0 1 58,66 Z"/>
+</svg>

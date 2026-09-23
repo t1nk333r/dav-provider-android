@@ -1,0 +1,7 @@
+First release under the name DAVKeep, and the first one signed as a release
+build rather than a debug build.
+
+* per-collection settings screen: sync, send edits, colour, server address
+* collection rows compacted to two lines
+* sending edits back to the server (PUT/DELETE with ETag preconditions)
+* launcher icon shipped as bitmaps as well as an adaptive icon

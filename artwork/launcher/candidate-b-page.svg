@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108">
+  <title>Candidate B — page</title>
+  <desc>One calendar page, with the contact cut out of it.</desc>
+  <rect width="108" height="108" fill="#F3E7D3"/>
+  <path fill="#14332E" fill-rule="evenodd" d="M26,32 H38 V26 H47 V32 H61 V26 H70 V32 H82 V78 A6,6 0 0 1 76,84 H32 A6,6 0 0 1 26,78 Z M44,48 A10,10 0 1 0 64,48 A10,10 0 1 0 44,48 Z M38,74 V72 A16,12 0 0 1 70,72 V74 Z"/>
+</svg>

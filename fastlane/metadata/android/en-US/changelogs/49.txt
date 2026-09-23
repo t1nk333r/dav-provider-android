@@ -1,0 +1,7 @@
+Saving an account left the setup form on screen with a report under it, and the
+Close button was the only way back to the account list.
+
+* a save that reports nothing closes the form and returns to the list
+* the toast says what the list cannot: that the server answered just now
+* anything reported -- an unreachable server, a certificate that would not
+  import -- keeps the screen open, where the fields that caused it are

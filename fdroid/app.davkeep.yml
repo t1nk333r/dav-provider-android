@@ -4,6 +4,10 @@
 # `commit` must be the full hash or the signed tag of the release being built; F-Droid builds from
 # source and signs with its own key, so an F-Droid install and a GitHub/Obtainium install of the
 # same version are different signatures and cannot replace one another.
+#
+# These per-version Builds entries and CurrentVersion matter only for the first merge request. Once
+# the app is in fdroiddata, AutoUpdateMode: Version with UpdateCheckMode: Tags picks up each new tag
+# on its own, so this file does not have to be chased on every release.
 
 Categories:
   - Internet

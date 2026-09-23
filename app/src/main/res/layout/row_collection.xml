@@ -47,15 +47,6 @@
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:visibility="gone" />
 
-        <!-- The per-Collection write switch, on the same row as the selection one: whether an edit
-             made on the phone may be sent to the server for this Collection. Neither
-             syncadapter_*.xml nor contacts.xml can be told about one Collection, so this switch is
-             the whole of the user's say. -->
-        <CheckBox
-            android:id="@+id/collection_writable"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/collection_writable" />
     </LinearLayout>
 
     <CheckBox
@@ -64,5 +55,18 @@
         android:layout_height="wrap_content"
         android:layout_marginStart="8dp"
         android:contentDescription="@string/collection_select" />
+
+    <!-- The row is a summary; the settings it summarises are a tap away. The write switch in
+         particular needs a sentence to be honest about what it does, and a sentence per row turned
+         this list into a wall of text. -->
+    <ImageView
+        android:id="@+id/collection_open"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_marginStart="4dp"
+        android:contentDescription="@string/collection_settings_open"
+        android:src="@drawable/ic_setup_chevron"
+        android:rotation="270"
+        android:tint="?attr/colorOnSurfaceVariant" />
 
 </LinearLayout>

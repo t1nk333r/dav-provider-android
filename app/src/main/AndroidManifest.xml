@@ -48,6 +48,14 @@
             android:label="@string/title_add_account" />
 
         <!-- Reached from Settings only; it reads this app's own file and shows it to the user. -->
+        <!-- One Collection's settings. Reached from its row on the accounts screen; the row
+             carries the summary, this carries the switches and what they mean. -->
+        <activity
+            android:name=".ui.CollectionSettingsActivity"
+            android:exported="false"
+            android:label="@string/app_name"
+            android:parentActivityName=".ui.SettingsActivity" />
+
         <activity
             android:name=".ui.LogsActivity"
             android:exported="false" />

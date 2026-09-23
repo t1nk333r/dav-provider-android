@@ -39,6 +39,7 @@ import app.davkeep.core.ClientCertificateInfo
 import app.davkeep.core.ClientCertificateSource
 import app.davkeep.core.ClientCertificateStore
 import app.davkeep.core.CredentialsUnreadableException
+import app.davkeep.error.ErrorSummary
 import app.davkeep.core.DavAccount
 import app.davkeep.core.DavHeader
 import app.davkeep.core.readBounded
@@ -119,6 +120,15 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
     /** The last label this screen derived from the URL, so a typed label is never overwritten. */
     private var derivedLabel: String? = null
     private var stored = false
+
+    /**
+     * Whether anything on this screen has reported a problem worth reading.
+     *
+     * A save that reports nothing closes the screen, so every report has to be able to stop that:
+     * a certificate that would not import is reported in the card and would otherwise vanish behind
+     * a screen closing on the probe's verdict, which knows nothing about it.
+     */
+    private var reportedProblem = false
     private var authenticatorResponse: AccountAuthenticatorResponse? = null
     private var detailsText = ""
 
@@ -591,6 +601,7 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
     }
 
     private fun showCertificateFailure(message: String) {
+        reportedProblem = true
         showCertificateStatus(message, failed = true)
         showCertificateDetails(null, warn = false)
     }
@@ -808,7 +819,7 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
                 url = davAccount.baseUrl,
                 variant = getString(R.string.diagnose_variant_with_credentials),
             )
-            main.post { if (isActive()) showOutcome(outcome) }
+            main.post { if (isActive()) finishOrShow(outcome) }
         }
     }
 
@@ -913,6 +924,7 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
 
     private fun reportFailure(summary: String, details: String) {
         setBusy(false)
+        reportedProblem = true
         probeCard.visibility = View.VISIBLE
         probeSummary.text = summary
         detailsText = details
@@ -937,6 +949,28 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
                 labelInput.requestFocus()
             }
             .show()
+    }
+
+    /**
+     * A save that worked is over: the form closes and the account list — where the account now is —
+     * comes back.
+     *
+     * Only a clean run closes. The check runs after the account is already stored, so a server that
+     * did not answer is a report about an account that exists, and the report is the reason to stay:
+     * the address or the credentials are on this screen, and the details expander is the only place
+     * the evidence is shown. Anything reported along the way — a save failure, a certificate that
+     * would not import — keeps the screen open for the same reason, which is what [reportedProblem]
+     * is for.
+     */
+    private fun finishOrShow(outcome: ProbeOutcome) {
+        if (reportedProblem || outcome.error.summary != ErrorSummary.NO_ERROR) {
+            showOutcome(outcome)
+            return
+        }
+        // Said here rather than left to the list: the list shows an account that has never synced,
+        // which is not the same claim as the server having answered this address just now.
+        Toast.makeText(this, R.string.account_saved_reachable, Toast.LENGTH_SHORT).show()
+        finish()
     }
 
     private fun showOutcome(outcome: ProbeOutcome) {

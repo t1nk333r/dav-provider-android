@@ -58,6 +58,9 @@
     <string name="error_url_scheme">The base URL must start with http:// or https://.</string>
     <string name="save_failed">The account could not be saved: %1$s</string>
     <string name="validation_saved">Account saved. The check below is a report, not a condition of saving.</string>
+    <!-- Shown as the setup screen closes on a clean save. Says both facts: the account is stored,
+         and the address answered just now — which "never synced" on the account list does not. -->
+    <string name="account_saved_reachable">Account saved. The server answered.</string>
     <string name="validation_progress">Asking the server with PROPFIND Depth: 0\u2026</string>
     <string name="details">Details</string>
     <string name="details_hide">Hide details</string>

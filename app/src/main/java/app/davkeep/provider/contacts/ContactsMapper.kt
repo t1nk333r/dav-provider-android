@@ -25,6 +25,7 @@ import android.provider.ContactsContract.Groups
 import android.provider.ContactsContract.RawContacts
 import android.provider.ContactsContract.SyncState
 import android.util.Log
+import java.security.MessageDigest
 import java.time.Instant
 import java.util.Locale
 import java.util.UUID
@@ -557,37 +558,58 @@ class ContactsMapper(
     /**
      * What the contact's photo row says about `PHOTO`.
      *
-     * "Unchanged" is `DATA_VERSION == SYNC2` — the snapshot [refreshPhotoBaselines] takes whenever a
-     * photo row is written — because the provider re-encodes an image it is given, so the row's bytes
-     * can never be compared with the ones the source carried. A row the editor has touched, or one
-     * without a snapshot, is rebuilt from the display photo.
+     * "Unchanged" is the photo's bytes hashing to what [refreshPhotoBaselines] recorded the last time
+     * this app wrote or sent them. The bytes are the provider's re-encode, never the source's, so the
+     * comparison is against the previous re-encode rather than against anything the server sent — but
+     * a re-encode the user has not touched is byte-identical to itself, and that is the whole
+     * question being asked.
+     *
+     * A row without a baseline, or one whose bytes no longer hash to it, is rebuilt from the display
+     * photo. A row that is gone takes the source's property with it.
+     *
+     * The baseline used to be the row's `DATA_VERSION`, which was wrong in a way no reading of the
+     * code showed: AOSP's `data_updated` trigger increments `data_version` on *every* update of a
+     * `Data` row, including the sync-adapter write that stores the baseline, so the recorded value was
+     * stale the moment it was written and every photo counted as edited. Measured on a device — a
+     * freshly synced photo row read `data_version=1, data_sync2=0` — and the consequence was a
+     * name-only edit replacing the server's 8932-character `PHOTO` with a 6660-character re-encode.
+     * A hash of the bytes cannot invalidate itself by being stored: see issue #31.
      */
     private fun photoEdit(account: Account, rowId: Long): PhotoEdit {
-        var version: Long? = null
-        var snapshot: String? = null
+        var present = false
+        var baseline: String? = null
         resolver.query(
             Data.CONTENT_URI.forSyncAdapter(account),
-            arrayOf(Data.DATA_VERSION, Data.SYNC2),
+            arrayOf(Data.SYNC2),
             "${Data.RAW_CONTACT_ID}=? AND ${Data.MIMETYPE}=?",
             arrayOf(rowId.toString(), Photo.CONTENT_ITEM_TYPE),
             null,
         )?.use { cursor ->
             if (cursor.moveToFirst()) {
-                version = cursor.getLong(0)
-                snapshot = cursor.getString(1)
+                present = true
+                baseline = cursor.getString(0)
             }
         }
         // No row at all: the photo is gone, and so is the source's property.
-        if (version == null) return PhotoEdit.Dropped
-        if (snapshot != null && snapshot.toLongOrNull() == version) return PhotoEdit.Kept
+        if (!present) return PhotoEdit.Dropped
         val bytes = displayPhotoBytes(account, rowId)
         if (bytes == null) {
             // A photo this app cannot spell is not a reason to delete one the user did not touch.
             Log.w(LOG_TAG, "contact $rowId: photo bytes are not readable, keeping the server's photo")
             return PhotoEdit.Kept
         }
+        if (baseline != null && baseline == photoDigest(bytes)) return PhotoEdit.Kept
         return PhotoEdit.Rebuilt(bytes)
     }
+
+    /**
+     * The photo bytes' identity, as stored in `Data.SYNC2`.
+     *
+     * SHA-256 and not the provider's own bookkeeping: a digest of the bytes is unchanged by the
+     * writes this app makes around them, which is exactly what the previous baseline was not.
+     */
+    private fun photoDigest(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     /**
      * The bytes of the display photo, or null when there are none to read.
@@ -707,35 +729,42 @@ class ContactsMapper(
     }
 
     /**
-     * Records which version of a photo row the current uploads are based on: `Data.SYNC2` is the
-     * `DATA_VERSION` the row had when it was last sent, and the two being equal is what lets the next
-     * edit copy the server's own `PHOTO` through untouched instead of re-encoding the image.
+     * Records what the photo these uploads are based on looks like: `Data.SYNC2` holds a digest of the
+     * photo's bytes, and the next edit finding the same digest is what lets it copy the server's own
+     * `PHOTO` through untouched instead of replacing it with a re-encode.
      *
-     * `DATA_VERSION` is the provider's, incremented by it on every write, so it can only be read after
-     * the rows are written — and it is read here rather than assumed, because what the next comparison
-     * needs is the value the provider actually kept.
+     * Read after the rows are written, because the bytes that matter are the ones the provider kept —
+     * it re-encodes an image it is given, so what was handed to it is not what will be read back.
+     *
+     * A digest and not `DATA_VERSION`: storing the baseline is itself an update of the row it
+     * describes, and AOSP's `data_updated` trigger increments `data_version` on every update, so a
+     * version baseline was false as soon as it was stored. Bytes do not move when they are described.
      */
     private fun refreshPhotoBaselines(account: Account, rowIds: List<Long>) {
         if (rowIds.isEmpty()) return
         val dataUri = Data.CONTENT_URI.forSyncAdapter(account)
         val placeholders = rowIds.joinToString(",") { "?" }
-        val baselines = LinkedHashMap<Long, Long>()
+        val photoRows = LinkedHashMap<Long, Long>()
         resolver.query(
             dataUri,
-            arrayOf(BaseColumns._ID, Data.DATA_VERSION),
+            arrayOf(BaseColumns._ID, Data.RAW_CONTACT_ID),
             "${Data.RAW_CONTACT_ID} IN ($placeholders) AND ${Data.MIMETYPE}=?",
             rowIds.map { it.toString() }.toTypedArray() + Photo.CONTENT_ITEM_TYPE,
             null,
         )?.use { cursor ->
-            while (cursor.moveToNext()) baselines[cursor.getLong(0)] = cursor.getLong(1)
+            while (cursor.moveToNext()) photoRows[cursor.getLong(0)] = cursor.getLong(1)
         }
-        if (baselines.isEmpty()) return
+        if (photoRows.isEmpty()) return
         val batch = ArrayList<ContentProviderOperation>()
-        for ((dataRowId, version) in baselines) {
+        for ((dataRowId, contactId) in photoRows) {
+            // Unreadable bytes leave the baseline alone rather than writing one that describes
+            // nothing: the next comparison then rebuilds the photo, which is the safe direction.
+            val digest = displayPhotoBytes(account, contactId)?.let { photoDigest(it) } ?: continue
             batch += ContentProviderOperation.newUpdate(ContentUris.withAppendedId(dataUri, dataRowId))
-                .withValues(ContentValues().apply { put(Data.SYNC2, version) })
+                .withValues(ContentValues().apply { put(Data.SYNC2, digest) })
                 .build()
         }
+        if (batch.isEmpty()) return
         resolver.applyBatch(authority, batch)
     }
 

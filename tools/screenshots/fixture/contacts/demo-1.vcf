@@ -1,0 +1,8 @@
+BEGIN:VCARD
+VERSION:3.0
+UID:demo-1
+FN:Ada Lovelace
+N:Lovelace;Ada;;;
+EMAIL;TYPE=INTERNET:ada@example.com
+TEL;TYPE=CELL:+44 20 7946 0100
+END:VCARD

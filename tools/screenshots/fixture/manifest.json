@@ -1,0 +1,34 @@
+{
+  "host": "dav.example.com",
+  "port": 8443,
+  "username": "alex",
+  "password": "demo",
+  "collections": [
+    {
+      "path": "contacts",
+      "type": "addressbook",
+      "displayname": "Contacts",
+      "selected": true,
+      "writable": true,
+      "items": "contacts"
+    },
+    {
+      "path": "personal",
+      "type": "calendar",
+      "displayname": "Personal",
+      "colour": "#E8554Eff",
+      "selected": true,
+      "writable": false,
+      "items": "personal"
+    },
+    {
+      "path": "work",
+      "type": "calendar",
+      "displayname": "Work",
+      "colour": "#D99A82ff",
+      "selected": false,
+      "writable": false,
+      "items": "work"
+    }
+  ]
+}

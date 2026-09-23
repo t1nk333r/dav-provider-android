@@ -1,0 +1,8 @@
+BEGIN:VCARD
+VERSION:3.0
+UID:demo-3
+FN:Alan Turing
+N:Turing;Alan;;;
+EMAIL;TYPE=INTERNET:alan@example.com
+TEL;TYPE=CELL:+44 161 496 0200
+END:VCARD

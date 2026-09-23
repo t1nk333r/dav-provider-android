@@ -1,0 +1,11 @@
+{
+  "version": "0.7.1 (51)",
+  "captured": "2026-09-23T23:22:16Z",
+  "host": "dav.example.com",
+  "images": {
+    "accounts": "f5760991526a6a2602437761ee0db393382d623066846cf30885609994210310",
+    "collection": "5a1ea1b3ab612894dd5f859059177c8775f7fecd04b4e275dc4e2ca6a8553401",
+    "setup": "b54c52934191965b876f4a4b0c91015d5b1bc6a58b66893886fe394669639ea2",
+    "log": "c79c5259fecc5f869cfb29819f131b58483120ed075b2bd539abba0ff11ebaf3"
+  }
+}

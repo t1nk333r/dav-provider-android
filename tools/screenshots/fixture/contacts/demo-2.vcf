@@ -1,0 +1,8 @@
+BEGIN:VCARD
+VERSION:3.0
+UID:demo-2
+FN:Grace Hopper
+N:Hopper;Grace;;;
+EMAIL;TYPE=INTERNET:grace@example.com
+TEL;TYPE=CELL:+1 202 555 0143
+END:VCARD

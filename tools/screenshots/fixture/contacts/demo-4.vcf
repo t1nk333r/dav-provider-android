@@ -1,0 +1,8 @@
+BEGIN:VCARD
+VERSION:3.0
+UID:demo-4
+FN:Katherine Johnson
+N:Johnson;Katherine;;;
+EMAIL;TYPE=INTERNET:katherine@example.com
+TEL;TYPE=CELL:+1 757 555 0186
+END:VCARD

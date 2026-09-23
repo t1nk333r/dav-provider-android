@@ -150,7 +150,9 @@
     <string name="collection_selected_switch">Sync this Collection</string>
     <string name="collection_selected_note">Off, nothing is fetched for it and its rows stay as they are. What syncs decides whether this account is scheduled at all.</string>
     <string name="collection_settings_open">Settings for this Collection</string>
-    <string name="collection_read_only">Read-only</string>
+    <string name="collection_read_only">read-only</string>
+    <!-- Between the parts of a Collection row's one summary line: type, outcome, and read-only. -->
+    <string name="collection_summary_separator">" · "</string>
     <string name="type_addressbook">address book</string>
     <string name="type_calendar">calendar</string>
     <string name="remove_account">Remove account</string>

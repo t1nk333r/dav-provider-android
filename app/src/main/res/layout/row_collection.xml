@@ -1,16 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  A Collection, in two lines.
+
+  It used to take five: the name, the full URL wrapped across two, the last outcome, and a
+  "Read-only" line. Five lines apiece turned three Collections into a screenful, and the URL — the
+  longest thing in the row and the least often read — did most of the damage. The row now carries
+  the name and one summary line; the URL is on the Collection's own screen, a tap away, where there
+  is room for it to wrap.
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:gravity="center_vertical"
+    android:minHeight="48dp"
     android:orientation="horizontal"
-    android:paddingTop="4dp"
-    android:paddingBottom="4dp">
+    android:paddingTop="2dp"
+    android:paddingBottom="2dp">
 
     <View
         android:id="@+id/collection_color"
-        android:layout_width="14dp"
-        android:layout_height="14dp" />
+        android:layout_width="10dp"
+        android:layout_height="10dp" />
 
     <LinearLayout
         android:layout_width="0dp"
@@ -23,29 +33,21 @@
             android:id="@+id/collection_name"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
             android:textAppearance="?attr/textAppearanceBodyMedium" />
 
+        <!-- Type, last outcome and — when edits are not sent — "read-only", on one line. Ellipsized
+             rather than wrapped: an error summary can be a sentence, and a row that grows to fit one
+             is a row that pushes the next Collection off the screen. The sentence is on the
+             Collection's screen and in the log, both of which are built to be read. -->
         <TextView
-            android:id="@+id/collection_meta"
+            android:id="@+id/collection_summary"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
             android:textAppearance="?attr/textAppearanceBodySmall" />
-
-        <TextView
-            android:id="@+id/collection_state"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textAppearance="?attr/textAppearanceBodySmall" />
-
-        <!-- Set from collection.writable. A Collection the user has not made writable is one the
-             engine refuses to send edits for, so the row has to say so rather than leave the
-             switch's position to be read as the answer. -->
-        <TextView
-            android:id="@+id/collection_access"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textAppearance="?attr/textAppearanceBodySmall"
-            android:visibility="gone" />
 
     </LinearLayout>
 
@@ -56,17 +58,15 @@
         android:layout_marginStart="8dp"
         android:contentDescription="@string/collection_select" />
 
-    <!-- The row is a summary; the settings it summarises are a tap away. The write switch in
-         particular needs a sentence to be honest about what it does, and a sentence per row turned
-         this list into a wall of text. -->
+    <!-- The row is a summary; the settings it summarises are a tap away. -->
     <ImageView
         android:id="@+id/collection_open"
         android:layout_width="24dp"
         android:layout_height="24dp"
-        android:layout_marginStart="4dp"
+        android:layout_marginStart="2dp"
         android:contentDescription="@string/collection_settings_open"
-        android:src="@drawable/ic_setup_chevron"
         android:rotation="270"
+        android:src="@drawable/ic_setup_chevron"
         android:tint="?attr/colorOnSurfaceVariant" />
 
 </LinearLayout>

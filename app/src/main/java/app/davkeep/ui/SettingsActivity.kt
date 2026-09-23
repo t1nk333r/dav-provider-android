@@ -347,19 +347,18 @@ class SettingsActivity : AppCompatActivity() {
         val row = LayoutInflater.from(this).inflate(R.layout.row_collection, parent, false)
         row.findViewById<TextView>(R.id.collection_name).text = collectionTitle(collection)
         applyCollectionColor(row.findViewById(R.id.collection_color), collection.color)
-        row.findViewById<TextView>(R.id.collection_meta).text = getString(
-            R.string.collection_meta,
-            collectionTypeLabel(this, collection.type),
-            collection.url,
-        )
-        val report = screen.report?.collections?.firstOrNull { it.collectionId == collection.id }
-        row.findViewById<TextView>(R.id.collection_state).text = collectionState(collection, report)
 
-        // §7: neither syncadapter_*.xml nor contacts.xml can be told about one Collection, so the
-        // engine refuses what a read-only one holds, and this line is where the user is told.
-        val access = row.findViewById<TextView>(R.id.collection_access)
-        access.setText(R.string.collection_read_only)
-        access.visibility = if (collection.writable) View.GONE else View.VISIBLE
+        // Type, outcome and — when edits are not sent — "read-only", on the row's one summary line.
+        // The Collection's URL is not here: it is the longest thing about a Collection and the least
+        // often read, and it has a screen of its own to be read on.
+        val report = screen.report?.collections?.firstOrNull { it.collectionId == collection.id }
+        val parts = buildList {
+            add(collectionTypeLabel(this@SettingsActivity, collection.type))
+            add(collectionState(this@SettingsActivity, collection, report))
+            if (!collection.writable) add(getString(R.string.collection_read_only))
+        }
+        row.findViewById<TextView>(R.id.collection_summary).text =
+            parts.joinToString(getString(R.string.collection_summary_separator))
 
         val check = row.findViewById<CheckBox>(R.id.collection_selected)
         check.isChecked = collection.selected

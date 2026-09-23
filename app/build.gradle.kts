@@ -25,8 +25,8 @@ android {
         // code is unchanged but whose version is not tells you nothing about which APK is on the
         // phone, and Android refuses to install one whose versionCode goes backwards, so this only
         // ever increases.
-        versionCode = 46
-        versionName = "0.5.1"
+        versionCode = 47
+        versionName = "0.5.2"
     }
 
     compileOptions {

@@ -45,6 +45,26 @@ internal fun collectionTypeLabel(context: Context, type: CollectionType): String
     },
 )
 
+/**
+ * A Collection's last outcome, in the fewest words that stay true.
+ *
+ * Shared because two screens show it — the row on the accounts screen, ellipsized, and the
+ * Collection's own screen, in full — and two copies of it drifted immediately: one reported the
+ * same stored report as "synced" and the other as "not synced yet".
+ *
+ * A Collection that vanished from the server is unavailable, never deleted.
+ */
+internal fun collectionState(
+    context: Context,
+    collection: DavCollection,
+    report: CollectionReport?,
+): String = when {
+    !collection.available -> context.getString(R.string.collection_unavailable)
+    report == null -> context.getString(R.string.collection_not_synced)
+    report.outcome == CollectionOutcome.OK -> context.getString(R.string.collection_synced)
+    else -> report.summary ?: context.getString(R.string.collection_not_synced)
+}
+
 internal fun statusLabel(context: Context, status: AccountStatus): String = context.getString(
     when (status) {
         AccountStatus.OK -> R.string.status_ok

@@ -96,11 +96,11 @@ class CollectionSettingsActivity : AppCompatActivity() {
             collectionTypeLabel(this, collection.type),
             collection.url,
         )
-        // Only the one fact this screen owns: a Collection a walk retired is one whose switches
-        // still mean something, and the reader has to know that before flipping them.
-        val state = findViewById<TextView>(R.id.collection_state)
-        state.setText(R.string.collection_unavailable)
-        state.visibility = if (collection.available) android.view.View.GONE else android.view.View.VISIBLE
+        // What the row had to ellipsize: the last outcome in full, and — for a Collection a walk
+        // retired — the fact that its switches still mean something for rows already on the phone.
+        val report = SyncStatusStore(this).read(account)
+            ?.collections?.firstOrNull { it.collectionId == collection.id }
+        findViewById<TextView>(R.id.collection_state).text = collectionState(this, collection, report)
 
         bind(R.id.collection_selected, collection.selected) { value ->
             write(collection.copy(selected = value), reschedule = true)

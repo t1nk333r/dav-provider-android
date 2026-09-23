@@ -351,6 +351,7 @@ class ContactsMapper(
 
     override fun pendingChanges(account: Account, collection: DavCollection): List<LocalChange> {
         assertAccountRegistered(account)
+        adoptPhotoBaselines(account, collection)
         // Deletions first, then creates, then updates. A deletion goes first so that a contact deleted
         // and added again does not meet its own old href on the server; creates before updates so that
         // nothing an update refers to is missing when it is sent.
@@ -373,6 +374,60 @@ class ContactsMapper(
             selection = collectionSelection(PENDING_UPDATES),
             args = collectionArgs(account, collection),
         )
+    }
+
+
+    /**
+     * Gives a baseline to a clean contact that has none, before anything it holds can be uploaded.
+     *
+     * A contact synced by a version that kept the baseline on the photo row arrives here with
+     * `RawContacts.SYNC4` empty, and an empty baseline means "the photo changed" — so the first edit
+     * to such a contact, even one that never touched the photo, would replace the server's `PHOTO`
+     * with the provider's re-encode. That is the loss issue #31 was about, once per contact, and it
+     * would land on address books that were synced before this app started hashing photos.
+     *
+     * A clean contact's rows are the server's: nothing local has touched them since the fetch wrote
+     * them, so the photo it holds is what the last upload or fetch left, and recording its digest
+     * states a fact rather than assuming one. A dirty contact is skipped deliberately — its photo may
+     * be the edit waiting to be sent, and claiming it matches the server would drop that edit
+     * silently, which is the same failure pointing the other way.
+     *
+     * Contacts with no photo get a marker rather than being left empty, so that the query converges
+     * to nothing after one run instead of reading every photo-less contact's bytes on every run. A
+     * photo added later hashes to something else, which is exactly the "changed" answer it should be.
+     */
+    private fun adoptPhotoBaselines(account: Account, collection: DavCollection) {
+        val candidates = ArrayList<Pair<Long, Long>>()
+        resolver.query(
+            RawContacts.CONTENT_URI.forSyncAdapter(account),
+            arrayOf(RawContacts._ID, RawContacts.VERSION),
+            "${collectionSelection(BASELINE_MISSING)}",
+            collectionArgs(account, collection),
+            null,
+        )?.use { cursor ->
+            while (cursor.moveToNext()) candidates += cursor.getLong(0) to cursor.getLong(1)
+        }
+        if (candidates.isEmpty()) return
+
+        val batch = ArrayList<ContentProviderOperation>()
+        for ((rowId, version) in candidates) {
+            val digest = displayPhotoBytes(account, rowId)?.let { photoDigest(it) } ?: NO_PHOTO
+            // Guarded like every other write that claims a row is current: an edit that arrived
+            // between the query and this batch leaves the contact without a baseline, and the next
+            // run offers it again.
+            batch += ContentProviderOperation
+                .newUpdate(RawContacts.CONTENT_URI.forSyncAdapter(account))
+                .withSelection(
+                    "${RawContacts._ID}=? AND ${RawContacts.VERSION}=? AND " +
+                        "${RawContacts.DIRTY}=0 AND ${RawContacts.DELETED}=0",
+                    arrayOf(rowId.toString(), version.toString()),
+                )
+                .withValue(RawContacts.SYNC4, digest)
+                .build()
+        }
+        runCatching { resolver.applyBatch(authority, batch) }
+            .onFailure { Log.w(LOG_TAG, "${collection.id}: could not adopt photo baselines", it) }
+        Log.i(LOG_TAG, "${collection.id}: adopted a photo baseline for ${batch.size} contacts")
     }
 
     override fun serialize(account: Account, collection: DavCollection, change: LocalChange): UploadBody? {
@@ -1538,5 +1593,20 @@ class ContactsMapper(
 
         /** Contacts made on the phone, which no server has been told about yet. */
         const val PENDING_CREATES = "${RawContacts.SOURCE_ID} IS NULL AND ${RawContacts.DELETED}=0"
+
+        /**
+         * Clean contacts this app has synced that carry no photo baseline: the ones a version which
+         * kept the baseline on the photo row left behind. Dirty and deleted rows are excluded
+         * because a baseline may only be adopted from a contact whose rows are still the server's.
+         */
+        const val BASELINE_MISSING =
+            "${RawContacts.SYNC4} IS NULL AND ${RawContacts.DIRTY}=0 AND ${RawContacts.DELETED}=0 " +
+                "AND ${RawContacts.SOURCE_ID} IS NOT NULL"
+
+        /**
+         * Stands for "this contact has no photo" in `SYNC4`. A real digest is 64 hex characters, so
+         * the two can never be confused, and a photo added later cannot hash to it.
+         */
+        const val NO_PHOTO = "none"
     }
 }

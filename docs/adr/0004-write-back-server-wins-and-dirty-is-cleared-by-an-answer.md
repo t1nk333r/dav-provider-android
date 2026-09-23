@@ -56,8 +56,15 @@ and fetching over it would be the wholesale replacement the held set exists to p
   is lost. Observed on a device: the server took `EventC` while the phone held `EventD` and stayed
   dirty, then took `EventD` eleven seconds later.
 - The contacts photo baseline lives on `RawContacts.SYNC4`, not on the photo row, because it has to be
-  written inside the version-guarded batch and a raw-contact write moves no version. Baselines written
-  before this change read as absent, and those contacts re-encode their photo once. No migration.
+  written inside the version-guarded batch and a raw-contact write moves no version. A contact synced
+  before this change carries no baseline there, and an absent baseline means "the photo changed", so
+  the first edit to each such contact — even one that never touched the photo — would have replaced
+  the server's `PHOTO` with a re-encode. A clean contact without a baseline is therefore given one,
+  the digest of the photo it already holds, before anything it holds can be uploaded: a clean
+  contact's rows are the server's, so that states a fact rather than assuming one. A dirty contact is
+  skipped, because its photo may be the edit waiting to be sent, and claiming it matches the server
+  would drop that edit silently. Verified by upgrading a device from the previous release: the first
+  sync adopted the baseline, and a name-only edit afterwards left the server's `PHOTO` byte-identical.
 - `CAN_PARTIALLY_UPDATE` stays 0 on every calendar this app creates. Turning it on would make the
   provider keep `LAST_SYNCED` copies that sync-adapter queries see, which `rowsClaiming` does not
   expect.

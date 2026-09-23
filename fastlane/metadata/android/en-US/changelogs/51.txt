@@ -1,0 +1,8 @@
+Upgrading from an earlier version no longer costs a contact its photo on the
+server.
+
+The baseline that decides whether a photo changed moved onto the raw contact in
+0.7.0, so contacts synced before that arrived with none -- and no baseline means
+"changed", which would have replaced the server's photo with a re-encode on the
+first edit to each of them. A clean contact without a baseline is now given one
+before anything is uploaded.

@@ -373,14 +373,6 @@ class SettingsActivity : AppCompatActivity() {
         return row
     }
 
-    /** A Collection that vanished from the server is unavailable, never deleted. */
-    private fun collectionState(collection: DavCollection, report: CollectionReport?): String = when {
-        !collection.available -> getString(R.string.collection_unavailable)
-        report == null -> getString(R.string.collection_not_synced)
-        report.outcome == CollectionOutcome.OK -> getString(R.string.collection_synced)
-        else -> report.summary ?: getString(R.string.collection_not_synced)
-    }
-
     // ------------------------------------------------------------ actions
 
     /**
@@ -399,12 +391,12 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun writeSelection(screen: AccountScreen, collection: DavCollection, selected: Boolean) {
-        val updated = screen.davAccount.collections.map {
-            if (it.id == collection.id) it.copy(selected = selected) else it
-        }
         executor.execute {
-            try {
-                selectionWriter().saveCollections(screen.account, updated)
+            // From the record as it is now, not from the list this card was drawn with: two quick
+            // taps on different rows would otherwise have the second undo the first.
+            val updated = try {
+                UiDependencies.accountStore(this)
+                    .updateCollection(screen.account, collection.id) { it.copy(selected = selected) }
             } catch (e: Exception) {
                 main.post { if (isActive()) { showMessage(getString(R.string.save_failed, e.javaClass.simpleName)); refresh() } }
                 return@execute
@@ -563,9 +555,13 @@ class SettingsActivity : AppCompatActivity() {
                 }
                 return@execute
             }
-            val merged = CollectionDiscovery.merge(screen.davAccount.collections, outcome.collections)
-            try {
-                selectionWriter().saveCollections(screen.account, merged)
+            // Merged into what is stored now, not into the list the card was drawn with: the walk was
+            // out on the network for seconds, and a checkbox tapped meanwhile is in the record, not
+            // in that snapshot.
+            val merged = try {
+                UiDependencies.accountStore(this).updateCollections(screen.account) { current ->
+                    CollectionDiscovery.merge(current, outcome.collections)
+                }
             } catch (e: Exception) {
                 main.post { if (isActive()) showMessage(getString(R.string.save_failed, e.javaClass.simpleName)) }
                 return@execute
@@ -643,12 +639,14 @@ class SettingsActivity : AppCompatActivity() {
                 // retires the one Collection the user had to type out by hand.
                 pinned = true,
             )
-            val prior = screen.davAccount.collections.firstOrNull { it.id == collection.id }
-            val updated = screen.davAccount.collections.filterNot { it.id == collection.id } +
-                // Re-adding a stored URL refreshes its details; it does not deselect it.
-                (if (prior != null) collection.copy(selected = prior.selected) else collection)
-            try {
-                selectionWriter().saveCollections(screen.account, updated)
+            // From the record as it is now: the probe above was a network round trip.
+            val updated = try {
+                UiDependencies.accountStore(this).updateCollections(screen.account) { current ->
+                    val prior = current.firstOrNull { it.id == collection.id }
+                    current.filterNot { it.id == collection.id } +
+                        // Re-adding a stored URL refreshes its details; it does not deselect it.
+                        (if (prior != null) collection.copy(selected = prior.selected) else collection)
+                }
             } catch (e: Exception) {
                 main.post { if (isActive()) showMessage(getString(R.string.save_failed, e.javaClass.simpleName)) }
                 return@execute
@@ -1008,9 +1006,6 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     // ------------------------------------------------------------ plumbing
-
-    private fun selectionWriter(): CollectionSelectionWriter =
-        UiDependencies.accountStore(this) as CollectionSelectionWriter
 
     /** Null when the credentials cannot be read: the caller has already reported why. */
     private fun loadAccount(account: Account): DavAccount? = try {

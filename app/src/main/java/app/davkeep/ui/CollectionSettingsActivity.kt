@@ -7,12 +7,12 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.materialswitch.MaterialSwitch
 import app.davkeep.R
 import app.davkeep.core.ACCOUNT_TYPE
-import app.davkeep.core.DavAccount
 import app.davkeep.core.DavCollection
 import app.davkeep.sync.SyncScheduler
 import java.util.concurrent.Executors
@@ -35,7 +35,6 @@ class CollectionSettingsActivity : AppCompatActivity() {
 
     private lateinit var account: Account
     private lateinit var collectionId: String
-    private var davAccount: DavAccount? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -74,18 +73,17 @@ class CollectionSettingsActivity : AppCompatActivity() {
      *
      * Read on every resume rather than held: a sync that ran while this screen was open changes what
      * the state line says, and the record is the only place that is true.
+     *
+     * The record is read without Credentials. This screen needs none, and reading them would make it
+     * unreachable exactly when the accounts screen still lists the Account: after a restore the
+     * Keystore key is gone, decrypting throws, and the screen used to close the instant it opened —
+     * with the write switch, which lives only here, out of reach and nothing said about why.
      */
     private fun render() {
-        val stored = try {
-            UiDependencies.accountStore(this).load(account)
-        } catch (e: Exception) {
-            finish()
-            return
-        }
-        davAccount = stored
+        val stored = UiDependencies.accountStore(this).list().firstOrNull { it.label == account.name }
         val collection = stored?.collections?.firstOrNull { it.id == collectionId }
         if (collection == null) {
-            // The Collection was removed, or a walk retired it, while this screen was open.
+            // The Account or the Collection was removed while this screen was open.
             finish()
             return
         }
@@ -103,10 +101,10 @@ class CollectionSettingsActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.collection_state).text = collectionState(this, collection, report)
 
         bind(R.id.collection_selected, collection.selected) { value ->
-            write(collection.copy(selected = value), reschedule = true)
+            write(reschedule = true) { it.copy(selected = value) }
         }
         bind(R.id.collection_writable, collection.writable) { value ->
-            write(collection.copy(writable = value), reschedule = false)
+            write(reschedule = false) { it.copy(writable = value) }
         }
     }
 
@@ -120,23 +118,28 @@ class CollectionSettingsActivity : AppCompatActivity() {
     }
 
     /**
-     * Writes the whole Collection list back, as the accounts screen does.
+     * Changes one field of this Collection, on the record as it is when the write runs.
      *
      * [reschedule] is what separates the two switches: §8's schedule follows what is selected, and
      * nothing about the schedule depends on which way edits flow.
+     *
+     * A failed write is said, not just undone: a switch that snaps back with no explanation reads as a
+     * tap that did not register, and the user taps again at something that cannot be written.
      */
-    private fun write(updated: DavCollection, reschedule: Boolean) {
-        val stored = davAccount ?: return
-        val collections = stored.collections.map { if (it.id == updated.id) updated else it }
+    private fun write(reschedule: Boolean, change: (DavCollection) -> DavCollection) {
         executor.execute {
-            try {
-                (UiDependencies.accountStore(this) as CollectionSelectionWriter)
-                    .saveCollections(account, collections)
+            val written = try {
+                UiDependencies.accountStore(this).updateCollection(account, collectionId, change)
             } catch (e: Exception) {
-                main.post { if (!isFinishing) render() }
+                main.post {
+                    if (!isFinishing) {
+                        Toast.makeText(this, getString(R.string.save_failed, e.javaClass.simpleName), Toast.LENGTH_LONG).show()
+                        render()
+                    }
+                }
                 return@execute
             }
-            if (reschedule) SyncScheduler.applySelection(this, account, collections)
+            if (reschedule) SyncScheduler.applySelection(this, account, written)
             main.post { if (!isFinishing) render() }
         }
     }

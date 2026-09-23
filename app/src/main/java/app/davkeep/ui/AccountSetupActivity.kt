@@ -759,6 +759,10 @@ class AccountSetupActivity : AppCompatActivity(), KeyChainAliasCallback {
         // The stored secrets are needed only to fill what the screen cannot show.
         val keepStoredPassword = !passwordCleared && typedPassword.isEmpty()
         val needsStoredSecrets = stored && (keepStoredPassword || hasEmptyHeaderValue())
+        // The flag gates whether *this* save closes the screen, so it starts clean. Carried over, a
+        // failure the user has since fixed would keep the screen open after a save that reported
+        // nothing — the opposite of what the flag is for.
+        reportedProblem = false
         setBusy(true)
         executor.execute {
             val store = UiDependencies.accountStore(this)

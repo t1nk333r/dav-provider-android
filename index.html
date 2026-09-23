@@ -35,11 +35,12 @@
   .log b { color:var(--text); font-weight:500 }
   .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
   footer { margin-top:4rem; padding-top:1.5rem; border-top:1px solid var(--line); color:var(--dim); font-size:.9rem }
-  .shots { display:flex; gap:.75rem; overflow-x:auto; margin:1.25rem -1.25rem; padding:0 1.25rem .5rem;
-           scroll-snap-type:x mandatory }
-  .shots figure { margin:0; flex:0 0 auto; width:11rem; scroll-snap-align:start }
+  .shots { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:1.5rem 1.25rem;
+           max-width:30rem; margin:1.5rem 0 }
+  .shots figure { margin:0 }
   .shots img { width:100%; border:1px solid var(--line); border-radius:.7rem; display:block; background:#16151C }
-  .shots figcaption { color:var(--dim); font-size:.82rem; margin-top:.5rem; line-height:1.45 }
+  .shots figcaption { color:var(--dim); font-size:.82rem; margin-top:.55rem; line-height:1.45 }
+  @media (max-width:26rem) { .shots { grid-template-columns:1fr; max-width:15rem } }
 </style>
 <main>
   <svg viewBox="0 0 108 108" class="mark" role="img" aria-label="DAVKeep"><path d="M31.855,56.637 A13.000,13.000 0 0 1 48.302,39.732 A16.000,16.000 0 1 1 75.695,56.272 A11.000,11.000 0 0 1 69.000,76.000 L39.000,76.000 A11.000,11.000 0 0 1 31.855,56.637 Z M37.170,56.004 A9.880,9.880 0 0 1 49.669,43.157 A12.160,12.160 0 1 1 70.489,55.727 A8.360,8.360 0 0 1 65.400,70.720 L42.600,70.720 A8.360,8.360 0 0 1 37.170,56.004 Z" fill="currentColor" fill-rule="evenodd"/><path d="M48.56 64.03Q48.56 68.50 43.86 68.50H39.99V59.56H43.86Q48.56 59.56 48.56 64.03ZM42.86 66.36H43.81Q45.62 66.36 45.62 64.42V63.64Q45.62 61.70 43.81 61.70H42.86Z" fill="currentColor"/><path d="M55.90 68.50 55.52 67.24H52.39L52.01 68.50H49.07L52.34 59.56H55.68L58.94 68.50ZM52.99 65.24H54.92L53.99 62.05H53.93Z" fill="currentColor"/><path d="M62.25 68.50 59.08 59.56H62.15L63.94 65.54H63.99L65.80 59.56H68.74L65.58 68.50Z" fill="currentColor"/></svg>

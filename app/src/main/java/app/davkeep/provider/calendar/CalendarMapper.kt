@@ -6,6 +6,7 @@ import android.content.ContentProviderOperation
 import android.content.ContentResolver
 import android.content.ContentValues
 import android.content.Context
+import android.content.OperationApplicationException
 import android.database.Cursor
 import android.net.Uri
 import android.provider.CalendarContract
@@ -29,6 +30,19 @@ private const val TAG = "CalendarMapper"
 
 /** SQLite stops accepting host parameters well before this; ids are deleted in chunks. */
 private const val ID_CHUNK = 500
+
+/**
+ * `Events.DIRTY` while this app holds the resource's bytes in an upload, written before they are
+ * read.
+ *
+ * The calendar provider keeps no version column, so the only thing that can tell a row which moved
+ * under a request from one which did not is what an editor writes: every editor path in
+ * `CalendarProvider2` puts the literal 1 into `DIRTY` and none of them reads the column first, so a
+ * row that is no longer 2 is a row an editor touched after this app armed it. The value costs
+ * nothing elsewhere — every reader here asks whether the flag is non-zero, and the provider reacts
+ * to a sync adapter's flag only when that flag is 0.
+ */
+private const val IN_FLIGHT = 2
 
 /**
  * Writes CalendarDAO resources into `com.android.calendar`, and reads a locally edited one back out
@@ -189,44 +203,80 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
         // otherwise be fifty provider round trips to ask questions this Collection already answers,
         // and every one of them runs on the sync thread.
         val claimed = rowsClaiming(account, calendarId, resources.keys)
-        // Operations are appended per resource and committed whenever the text already queued would
-        // pass the byte budget: the provider applies a batch in the order it was appended — a master
-        // still precedes the overrides that link to it by ORIGINAL_SYNC_ID — and a resource's rows,
-        // related rows and source still commit together, because a flush only ever happens at a
-        // resource boundary. Without the budget a batch of fifty large resources would be one Binder
-        // transaction of tens of megabytes.
-        var batch = ArrayList<ContentProviderOperation>()
-        var rows = 0
-        var queuedBytes = 0
+        class Built(val ops: ArrayList<ContentProviderOperation>, val rows: Int, val kept: Int)
+        // One group's operations, built against one reading of the rows they claim. Built as a unit
+        // because a batch the provider refuses has to be built a second time from the same names.
+        fun build(names: List<String>, claiming: Claimed): Built {
+            val ops = ArrayList<ContentProviderOperation>()
+            var written = 0
+            var blocked = 0
+            for (name in names) {
+                val body = resources.getValue(name)
+                if (name in claiming.blocked) {
+                    blocked++
+                    continue
+                }
+                val resource = try {
+                    parseResource(body)
+                } catch (e: Exception) {
+                    // One unparseable resource must not cost the rest of the batch.
+                    Log.w(TAG, "Skipping $name: not usable as iCalendar", e)
+                    continue
+                }
+                val existing = claiming.rows[name].orEmpty()
+                written += ResourceWriter(account, calendarId, name, body, resource, etags[name], existing)
+                    .write(ops)
+            }
+            return Built(ops, written, blocked)
+        }
+        // Resources are grouped whenever the text already queued would pass the byte budget: the
+        // provider applies a batch in the order it was appended — a master still precedes the
+        // overrides that link to it by ORIGINAL_SYNC_ID — and a resource's rows, related rows and
+        // source still commit together, because a group boundary is always a resource boundary.
+        // Without the budget a batch of fifty large resources would be one Binder transaction of
+        // tens of megabytes.
         var kept = 0
+        val groups = ArrayList<List<String>>()
+        var group = ArrayList<String>()
+        var queuedBytes = 0
         for ((name, body) in resources) {
             if (name in claimed.blocked) {
                 kept++
                 continue
             }
             val bytes = utf8Length(body)
-            if (queuedBytes + bytes > SOURCE_CAP_BYTES && batch.isNotEmpty()) {
-                resolver.applyBatch(authority, batch)
-                batch = ArrayList()
+            if (queuedBytes + bytes > SOURCE_CAP_BYTES && group.isNotEmpty()) {
+                groups += group
+                group = ArrayList()
                 queuedBytes = 0
             }
-            val resource = try {
-                parseResource(body)
-            } catch (e: Exception) {
-                // One unparseable resource must not cost the rest of the batch.
-                Log.w(TAG, "Skipping $name: not usable as iCalendar", e)
-                continue
-            }
-            val existing = claimed.rows[name].orEmpty()
-            rows += ResourceWriter(account, calendarId, name, body, resource, etags[name], existing).write(batch)
+            group += name
             queuedBytes += bytes
         }
-        // Failure is now the batch's, not one resource's: the provider applies a batch in one
-        // transaction, so an operation it refuses leaves no row of that batch behind, and the
-        // exception reaches the engine's per-Collection catch, which records the failure and offers
-        // the Collection again on the next run. Skipping the one resource that failed is what the
-        // contacts mapper gave up for this too.
-        if (batch.isNotEmpty()) resolver.applyBatch(authority, batch)
+        if (group.isNotEmpty()) groups += group
+
+        var rows = 0
+        for (names in groups) {
+            var built = build(names, claimed)
+            if (built.ops.isNotEmpty()) {
+                try {
+                    resolver.applyBatch(authority, built.ops)
+                } catch (e: OperationApplicationException) {
+                    // An editor changed one of these rows between the query above and this commit,
+                    // and the guard on the operation that claimed otherwise refused it. The batch is
+                    // one transaction, so nothing of it is on disk; building it again against the
+                    // rows as they are now is what keeps one keystroke from costing the other forty
+                    // nine resources, and the row that moved is blocked this time and keeps its
+                    // edit. A second refusal reaches the engine's per-Collection catch, which
+                    // records the failure and offers the Collection again on the next run.
+                    Log.i(TAG, "${collection.id}: a row moved under a batch of ${names.size}; writing it again")
+                    built = build(names, rowsClaiming(account, calendarId, names))
+                    if (built.ops.isNotEmpty()) resolver.applyBatch(authority, built.ops)
+                }
+            }
+            rows += built.rows
+            kept += built.kept
+        }
         if (kept > 0) {
             Log.i(TAG, "${collection.id}: $kept resource(s) hold a local edit and were not written over")
         }
@@ -327,6 +377,9 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
      *
      * A deletion returns an empty body rather than null: null means "these bytes cannot be produced"
      * and counts as pending, while a `DELETE` needs no bytes at all.
+     *
+     * The resource's rows are marked [IN_FLIGHT] before they are read, which is what later lets an
+     * edit that arrived while the request was out be told apart from the one being sent.
      */
     override fun serialize(account: Account, collection: DavCollection, change: LocalChange): UploadBody? {
         if (change.kind == ChangeKind.DELETE) return UploadBody("", change.uid.orEmpty())
@@ -341,6 +394,22 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
                 Log.w(TAG, "Event ${change.rowId} has no UID; not uploading it")
                 return null
             }
+        }
+        // Armed before the bytes are read, so that an edit which lands while the request is in
+        // flight is visible afterwards as a row that is no longer [IN_FLIGHT]. Every live row of
+        // the resource is armed and not only the dirty ones: an edit to a row that was clean when
+        // the body was read is just as unsent as one to a row that was not.
+        val armed = resolver.update(
+            eventsUri(account),
+            ContentValues().apply { put(Events.DIRTY, IN_FLIGHT) },
+            "${resourceSelection(calendarId, change)} AND ${Events.DELETED}=0",
+            resourceArgs(calendarId, change),
+        )
+        if (armed == 0) {
+            // Nothing of the resource is live any more: the row was deleted or became a tombstone
+            // between the queue being read and here, and there are no bytes to produce for it.
+            Log.i(TAG, "Event ${change.rowId} has no live row left; not uploading it")
+            return null
         }
         val rows = readResourceRows(account, calendarId, change, uid) ?: return null
         val name = change.key ?: "a new event"
@@ -358,13 +427,19 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
     }
 
     /**
-     * Stores what the server accepted, in one batch over the resource's whole row set.
+     * Stores what the server accepted: the master's identity and ETag first, then the flags.
      *
-     * `DIRTY` is cleared nowhere else, and the guard is the row as this call finds it rather than the
-     * row the caller read: calendar keeps no counter to compare against, so the one movement it can
-     * see is the master having become a tombstone (the user deleted the event while its edit was in
-     * flight) or having been cleared already. Either way the guard refuses, nothing of the resource
-     * is left dirty, and the deletion goes out on the next run.
+     * The identity write is unguarded and on its own, because it is true whether or not the row
+     * moved — the server does hold these bytes under this name and ETag, and the next `If-Match`
+     * and the next patch base are read back off the row. A master that became a tombstone while the
+     * request was in flight needs the new ETag for exactly the `DELETE` it sends next run.
+     *
+     * The flags are cleared only where the [IN_FLIGHT] sentinel [serialize] armed the resource with
+     * is still there. Every editor path in the provider writes the literal 1, so a row that is no
+     * longer armed is one an editor touched during the request, and it keeps its flag and its edit;
+     * an override the editor *inserted* in flight was never armed and is never cleared either.
+     * Writing `DIRTY=0` through a sync-adapter URI is also what makes the provider null `MUTATORS`,
+     * so the value written there is literally 0 and never the sentinel.
      */
     override fun markUploaded(
         account: Account,
@@ -378,11 +453,19 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
         if (change.kind == ChangeKind.DELETE) return false
         assertAccountRegistered(account)
         val calendarId = findCalendarId(account, collection) ?: return false
-        val master = ContentValues().apply {
+        val identity = ContentValues().apply {
             put(Events._SYNC_ID, key)
             put(Events.UID_2445, uid)
             put(Events.SYNC_DATA1, etag)
             putSource(this, body)
+        }
+        resolver.update(
+            eventsUri(account),
+            identity,
+            "${Events._ID}=?",
+            arrayOf(change.rowId.toString()),
+        )
+        val master = ContentValues().apply {
             put(Events.DIRTY, 0)
             putNull(Events.MUTATORS)
         }
@@ -394,12 +477,12 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
             put(Events.DIRTY, 0)
             putNull(Events.MUTATORS)
         }
-        val results = resolver.applyBatch(
+        resolver.applyBatch(
             authority,
             arrayListOf(
                 ContentProviderOperation.newUpdate(eventsUri(account))
                     .withSelection(
-                        "${Events._ID}=? AND ${Events.DIRTY}=1 AND ${Events.DELETED}=0",
+                        "${Events._ID}=? AND ${Events.DIRTY}=$IN_FLIGHT AND ${Events.DELETED}=0",
                         arrayOf(change.rowId.toString()),
                     )
                     .withValues(master)
@@ -413,19 +496,19 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
                     // never queues it again. It survived testing only because the same run's
                     // listing usually re-fetched the resource and wrote the rows back.
                     .withSelection(
-                        "${resourceSelection(calendarId, change)} AND ${Events._ID}!=?",
+                        "${resourceSelection(calendarId, change)} AND ${Events._ID}!=? " +
+                            "AND ${Events.DIRTY}=$IN_FLIGHT AND ${Events.DELETED}=0",
                         resourceArgs(calendarId, change) + change.rowId.toString(),
                     )
                     .withValues(overrides)
                     .build(),
             ),
         )
-        val masterRows = results.getOrNull(0)?.count ?: 0
-        val overrideRows = results.getOrNull(1)?.count ?: 0
-        if (masterRows == 0 && overrideRows == 0) {
+        val pending = stillPending(account, calendarId, change)
+        if (pending) {
             Log.i(TAG, "Row ${change.rowId} moved while its upload was in flight; it stays pending")
         }
-        return masterRows > 0 || overrideRows > 0
+        return !pending
     }
 
     /**
@@ -452,10 +535,33 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
      *
      * A [LocalChange.key] is adopted onto the master, which is what a create the server answered
      * `412` for needs: the name is taken, so it is no longer a create.
+     *
+     * What proves the row is the one the answer is about differs with [sent], because the two
+     * callers stand in different places. A change that was sent was armed by [serialize], so an
+     * edit made while the server was saying no shows as a row that is no longer [IN_FLIGHT] and is
+     * left exactly as the editor left it: it is newer than the refusal and meets the same answer
+     * next run. A change that was refused was never sent and never armed, and there was no window
+     * to arm against — this batch is one provider transaction, so its selections are evaluated with
+     * no editor write able to land between them and the clear, and any dirty row of the resource is
+     * the edit the refusal is about. A tombstone is armed in neither case: it is invisible to the
+     * editor and nothing can change it.
+     *
+     * @return false when any row of the resource still holds an unsent edit, in which case the
+     * conflict has not been resolved and the caller must keep the resource out of this run's fetch.
      */
-    override fun revertLocalChange(account: Account, collection: DavCollection, change: LocalChange) {
+    override fun revertLocalChange(
+        account: Account,
+        collection: DavCollection,
+        change: LocalChange,
+        sent: Boolean,
+    ): Boolean {
         assertAccountRegistered(account)
-        val calendarId = findCalendarId(account, collection) ?: return
+        val calendarId = findCalendarId(account, collection) ?: return false
+        val guard = if (sent && change.kind != ChangeKind.DELETE) {
+            "${Events.DIRTY}=$IN_FLIGHT"
+        } else {
+            "${Events.DIRTY}<>0"
+        }
         val values = ContentValues().apply {
             change.key?.let { put(Events._SYNC_ID, it) }
             put(Events.DELETED, 0)
@@ -474,15 +580,44 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
             authority,
             arrayListOf(
                 ContentProviderOperation.newUpdate(eventsUri(account))
-                    .withSelection("${Events._ID}=?", arrayOf(change.rowId.toString()))
+                    .withSelection("${Events._ID}=? AND $guard", arrayOf(change.rowId.toString()))
                     .withValues(values)
                     .build(),
+                // The master is matched by [resourceSelection] too, and the operation above has
+                // just cleared its flag, so the guard is also what keeps the overrides' values —
+                // ORIGINAL_SYNC_ID among them — off the row that carries the resource's name.
                 ContentProviderOperation.newUpdate(eventsUri(account))
-                    .withSelection(resourceSelection(calendarId, change), resourceArgs(calendarId, change))
+                    .withSelection(
+                        "${resourceSelection(calendarId, change)} AND $guard",
+                        resourceArgs(calendarId, change),
+                    )
                     .withValues(overrides)
                     .build(),
             ),
         )
+        return !stillPending(account, calendarId, change)
+    }
+
+    /**
+     * Whether any row of the resource still holds an edit no run has sent.
+     *
+     * Asked after the answer has been written, and it is the answer's own return value: a row an
+     * editor touched while the request was in flight was not cleared, nor was an override it
+     * inserted, which the arm in [serialize] never saw, and either leaves the resource for the next
+     * run. A query the provider could not answer counts as pending, which costs one more upload and
+     * never an edit.
+     */
+    private fun stillPending(account: Account, calendarId: Long, change: LocalChange): Boolean {
+        val selection = "${resourceSelection(calendarId, change)} AND " +
+            "(${Events.DIRTY}<>0 OR ${Events.DELETED}=1)"
+        resolver.query(
+            eventsUri(account),
+            arrayOf(Events._ID),
+            selection,
+            resourceArgs(calendarId, change),
+            null,
+        )?.use { cursor -> return cursor.count > 0 }
+        return true
     }
 
     /** The master row plus every row claiming the resource, by either identity the provider links by. */
@@ -958,10 +1093,20 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
         private fun eventInsert(values: ContentValues): ContentProviderOperation =
             ContentProviderOperation.newInsert(eventsUri(account)).withValues(values).build()
 
+        /**
+         * Guarded on the row being the clean one [rowsClaiming] read: a row an editor has changed
+         * since holds an edit no run has sent, and writing the server's copy over it is the lost
+         * update the flag exists to prevent. The expected count makes the provider refuse the whole
+         * batch rather than that one row, which [upsert] answers by building it again.
+         */
         private fun eventUpdate(id: Long, values: ContentValues): ContentProviderOperation =
             ContentProviderOperation.newUpdate(eventsUri(account))
-                .withSelection("${Events._ID}=?", arrayOf(id.toString()))
+                .withSelection(
+                    "${Events._ID}=? AND ${Events.DIRTY}=0 AND ${Events.DELETED}=0",
+                    arrayOf(id.toString()),
+                )
                 .withValues(values)
+                .withExpectedCount(1)
                 .build()
     }
 
@@ -1018,13 +1163,22 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
         return deleted
     }
 
-    /** The deletes of [deleteIds], appended to a batch instead of run. */
+    /**
+     * The deletes of [deleteIds], appended to a batch instead of run.
+     *
+     * Dirty and deleted rows are left where they are, with no expected count: a row that became one
+     * or the other since the batch was planned is an edit or a deletion this app has not sent, and
+     * keeping it costs a duplicate until the next run uploads it, while deleting it costs the edit.
+     */
     private fun appendDeletes(batch: MutableList<ContentProviderOperation>, account: Account, ids: List<Long>) {
         for (chunk in ids.chunked(ID_CHUNK)) {
             val placeholders = chunk.joinToString(",") { "?" }
             val args = chunk.map { it.toString() }.toTypedArray()
             batch += ContentProviderOperation.newDelete(eventsUri(account))
-                .withSelection("${Events._ID} IN ($placeholders)", args)
+                .withSelection(
+                    "${Events._ID} IN ($placeholders) AND ${Events.DIRTY}=0 AND ${Events.DELETED}=0",
+                    args,
+                )
                 .build()
         }
     }

@@ -1,0 +1,8 @@
+Two data-loss defects found by audit and settled on a device.
+
+* an edit made while its own upload was in flight is no longer acknowledged by
+  that upload: contacts guard on the provider's version counter, calendars on an
+  in-flight marker, and a row that moved stays pending for the next run
+* a contact's photo is no longer replaced on the server by an edit that only
+  touched something else: the "unchanged" baseline is a digest of the photo's
+  bytes, which the act of storing it cannot invalidate

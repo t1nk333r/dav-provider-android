@@ -361,8 +361,23 @@ interface ProviderMapper {
     /**
      * `DELETED=0`, `DIRTY=0`, ETag null on every row of the resource: the local edit is given up
      * and the row now waits for the server's version, which this same run fetches onto it.
+     *
+     * @param sent whether a body reached the server and this is its answer. A refusal sends
+     * nothing, so a provider that marks the rows it is about to send has nothing marked to match on
+     * and must fall back to what it can still prove — that the row is the dirty one it was told
+     * about. Without this a refused Collection reverts nothing at all, and §7's promise that a
+     * read-only Collection gives an edit back becomes silence.
+     * @return false when the row moved since [change] was read, in which case **nothing is written**.
+     * An edit made while the server was answering is newer than the answer, so giving it up would
+     * lose exactly what the user just typed; it stays pending and meets the same answer next run,
+     * against the row as it is then.
      */
-    fun revertLocalChange(account: Account, collection: DavCollection, change: LocalChange)
+    fun revertLocalChange(
+        account: Account,
+        collection: DavCollection,
+        change: LocalChange,
+        sent: Boolean,
+    ): Boolean
 }
 
 enum class ChangeKind { CREATE, UPDATE, DELETE }

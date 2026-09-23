@@ -1,3 +1,5 @@
+<img src="docs/icon.png" alt="" width="96" align="left" hspace="12" vspace="4">
+
 # DAVKeep
 
 [davkeep.app](https://davkeep.app) · Android only
@@ -94,6 +96,12 @@ attributable to the credential rather than to the proxy ignoring unfamiliar meth
 ## Repo conventions
 
 Agent/tooling conventions live in [`AGENTS.md`](./AGENTS.md) and `docs/agents/`.
+
+## What it looks like
+
+| Accounts | A Collection | Setup | Log |
+|---|---|---|---|
+| ![](docs/shots/1.png) | ![](docs/shots/2.png) | ![](docs/shots/3.png) | ![](docs/shots/4.png) |
 
 ## Licence
 

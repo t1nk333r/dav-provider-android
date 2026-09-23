@@ -8,6 +8,7 @@ import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.content.OperationApplicationException
 import android.database.Cursor
 import android.net.Uri
 import android.provider.BaseColumns
@@ -48,7 +49,9 @@ import app.davkeep.core.UploadBody
  * fetched row is written `DIRTY=0`; a write from the phone is serialised by [patchContact] from the
  * item's own stored vCard, and `DIRTY` returns to 0 in exactly one place — [markUploaded], after the
  * server has answered the `PUT`. Nothing else may clear it: a row cleared without an answer is an
- * edit thrown away.
+ * edit thrown away. The clear names the row it is about, matching on the `RawContacts.VERSION` the
+ * body was read under, and commits in the same batch as the rows re-derived from that body: a
+ * contact the user edited while the request was in flight keeps its flag and its newer rows.
  *
  * @param photoFetcher used for `PHOTO;VALUE=uri`, and only for a URL that is on the Collection's own
  *   Origin. Left null, such photos are skipped and counted.
@@ -131,111 +134,140 @@ class ContactsMapper(
     ): Int {
         assertAccountRegistered(account)
 
-        val stats = UpsertStats()
         val contacts = ArrayList<Resource>()
         val groups = ArrayList<Resource>()
+        var unreadable = 0
         for ((key, text) in resources) {
             val parsed = parseVCard(text)
             if (parsed == null) {
-                stats.unreadable++
+                unreadable++
                 Log.w(LOG_TAG, "${collection.id}: $key did not parse, leaving it for the next run")
                 continue
             }
             if (parsed.isGroup) groups += Resource(key, text, parsed) else contacts += Resource(key, text, parsed)
         }
 
-        val batch = ArrayList<ContentProviderOperation>()
         val dataUri = Data.CONTENT_URI.forSyncAdapter(account)
         val rawContactsUri = RawContacts.CONTENT_URI.forSyncAdapter(account)
         val groupsUri = Groups.CONTENT_URI.forSyncAdapter(account)
+
+        // The batch is a function of the snapshot it was built from and of nothing else, so that a row
+        // that moved under it can be answered by reading the snapshot again and building the whole
+        // batch a second time.
+        fun assemble(known: KnownRows): Assembly {
+            val stats = UpsertStats()
+            stats.unreadable = unreadable
+            val batch = ArrayList<ContentProviderOperation>()
+
+            // Pass 1: contacts, with their ETags, in the rows that carry them. Nothing else in the
+            // batch may point at a contact that does not exist yet.
+            val writtenContacts = ArrayList<Pair<Resource, RowRef>>()
+            val contactsByUid = HashMap<String, RowRef>()
+            val photoContacts = ArrayList<RowRef>()
+            for (resource in contacts) {
+                val ref = appendContact(
+                    account, collection, resource, etags[resource.key], dataUri, rawContactsUri, batch, stats, known,
+                    photoContacts,
+                ) ?: continue
+                writtenContacts += resource to ref
+                resource.parsed.uid?.let { contactsByUid[it] = ref }
+            }
+
+            // Pass 2: groups, which memberships need a row id for.
+            val writtenGroups = ArrayList<Pair<Resource, RowRef>>()
+            val groupsByTitle = HashMap<String, RowRef>()
+            for (resource in groups) {
+                val ref =
+                    appendGroup(account, collection, resource, etags[resource.key], dataUri, groupsUri, batch, known)
+                writtenGroups += resource to ref
+                resource.parsed.displayName?.let { groupsByTitle[it.lowercase(Locale.ROOT)] = ref }
+            }
+
+            val unresolved = ArrayList<DeferredMembership>()
+            // A contact's CATEGORIES name the groups it belongs to, which is how a DAV client that has
+            // no group objects at all still expresses membership.
+            for ((resource, ref) in writtenContacts) {
+                for (category in resource.parsed.categories) {
+                    val group = groupsByTitle[category.lowercase(Locale.ROOT)]
+                        ?: known.groupIdsByTitle[category]?.let { RowRef.existing(it) }
+                    if (group == null) {
+                        unresolved += DeferredMembership(MEMBERSHIP_FROM_CATEGORIES, contact = ref, groupTitle = category)
+                        continue
+                    }
+                    batch += membershipOperation(dataUri, ref, group, MEMBERSHIP_FROM_CATEGORIES)
+                    stats.memberships++
+                }
+            }
+            // A group vCard names its members by UID, which is the other direction of the same relation.
+            for ((resource, group) in writtenGroups) {
+                for (uid in resource.parsed.members) {
+                    // A contact whose own edit is still pending is not a row to add a membership to: the
+                    // next run resolves it once the flag is gone.
+                    val contact = contactsByUid[uid]
+                        ?: known.contactIdsByUid[uid]?.takeIf { !it.pending }?.let { RowRef.existing(it.id) }
+                    if (contact == null) {
+                        unresolved += DeferredMembership(MEMBERSHIP_FROM_GROUP, contactUid = uid, group = group)
+                        continue
+                    }
+                    batch += membershipOperation(dataUri, contact, group, MEMBERSHIP_FROM_GROUP)
+                    stats.memberships++
+                }
+            }
+
+            stats.items = contacts.size + groups.size
+            return Assembly(batch, photoContacts, unresolved, stats)
+        }
 
         // The rows this Collection already holds, for every name this batch asks about, read once for
         // the batch: the write path asks "which row is this href?" once per resource and "which row is
         // this UID or title?" once per membership end, so a run in which only contacts changed used to
         // pay an indexed query for each of those answers. The names are the batch's own, so this reads
         // what those questions can have an answer for and nothing else.
-        val known = knownRows(account, collection, contacts, groups)
-
-        // Pass 1: contacts, with their ETags, in the rows that carry them. Nothing else in the batch
-        // may point at a contact that does not exist yet.
-        val writtenContacts = ArrayList<Pair<Resource, RowRef>>()
-        val contactsByUid = HashMap<String, RowRef>()
-        val photoContacts = ArrayList<RowRef>()
-        for (resource in contacts) {
-            val ref = appendContact(
-                account, collection, resource, etags[resource.key], dataUri, rawContactsUri, batch, stats, known,
-                photoContacts,
-            ) ?: continue
-            writtenContacts += resource to ref
-            resource.parsed.uid?.let { contactsByUid[it] = ref }
-        }
-
-        // Pass 2: groups, which memberships need a row id for.
-        val writtenGroups = ArrayList<Pair<Resource, RowRef>>()
-        val groupsByTitle = HashMap<String, RowRef>()
-        for (resource in groups) {
-            val ref = appendGroup(account, collection, resource, etags[resource.key], dataUri, groupsUri, batch, known)
-            writtenGroups += resource to ref
-            resource.parsed.displayName?.let { groupsByTitle[it.lowercase(Locale.ROOT)] = ref }
-        }
-
-        val unresolved = ArrayList<DeferredMembership>()
-        // A contact's CATEGORIES name the groups it belongs to, which is how a DAV client that has no
-        // group objects at all still expresses membership.
-        for ((resource, ref) in writtenContacts) {
-            for (category in resource.parsed.categories) {
-                val group = groupsByTitle[category.lowercase(Locale.ROOT)]
-                    ?: known.groupIdsByTitle[category]?.let { RowRef.existing(it) }
-                if (group == null) {
-                    unresolved += DeferredMembership(MEMBERSHIP_FROM_CATEGORIES, contact = ref, groupTitle = category)
-                    continue
-                }
-                batch += membershipOperation(dataUri, ref, group, MEMBERSHIP_FROM_CATEGORIES)
-                stats.memberships++
-            }
-        }
-        // A group vCard names its members by UID, which is the other direction of the same relation.
-        for ((resource, group) in writtenGroups) {
-            for (uid in resource.parsed.members) {
-                // A contact whose own edit is still pending is not a row to add a membership to: the
-                // next run resolves it once the flag is gone.
-                val contact = contactsByUid[uid]
-                    ?: known.contactIdsByUid[uid]?.takeIf { !it.pending }?.let { RowRef.existing(it.id) }
-                if (contact == null) {
-                    unresolved += DeferredMembership(MEMBERSHIP_FROM_GROUP, contactUid = uid, group = group)
-                    continue
-                }
-                batch += membershipOperation(dataUri, contact, group, MEMBERSHIP_FROM_GROUP)
-                stats.memberships++
-            }
-        }
-
-        stats.items = contacts.size + groups.size
+        var known = knownRows(account, collection, contacts, groups)
+        var assembly = assemble(known)
 
         // Nothing to write is a real outcome — every resource may have failed to parse — and an
         // empty batch is not something the framework accepts.
-        if (batch.isEmpty()) {
-            stats.log(collection)
-            return stats.items
+        if (assembly.batch.isEmpty()) {
+            assembly.stats.log(collection)
+            return assembly.stats.items
         }
 
         // Re-checked here and not only at the start: a long first sync is exactly when a user is
         // most likely to remove the Account, and the rows of an Account that no longer exists are
         // rows the provider reaps.
         assertAccountRegistered(account)
-        val results = resolver.applyBatch(authority, batch)
+        val results = try {
+            resolver.applyBatch(authority, assembly.batch)
+        } catch (e: OperationApplicationException) {
+            // One row moved between the snapshot and the batch, and the provider rolls a batch back
+            // whole: giving up here would lose a listing's worth of resources to a single keystroke.
+            // The snapshot is read again and the batch rebuilt around what the rows are now — the row
+            // that moved is dirty or deleted, so `appendContact` holds it back rather than guarding on
+            // it again — and a second failure is a race this run cannot win.
+            Log.i(LOG_TAG, "${collection.id}: a contact moved while the batch was built, rebuilding it once: $e")
+            known = knownRows(account, collection, contacts, groups)
+            assembly = assemble(known)
+            if (assembly.batch.isEmpty()) {
+                emptyArray()
+            } else {
+                assertAccountRegistered(account)
+                resolver.applyBatch(authority, assembly.batch)
+            }
+        }
+        val stats = assembly.stats
 
-        // Pass 2a: the photo rows this batch wrote now have a version the provider gave them, and that
-        // version is what the next upload compares against to tell a photo the user changed from one
-        // the source already carries (`VCardPatch.PhotoEdit`).
-        refreshPhotoBaselines(account, photoContacts.mapNotNull { resolveId(it, results) })
+        // Pass 2a: the photo rows this batch wrote now hold bytes the provider re-encoded, and a
+        // digest of those bytes is what the next upload compares against to tell a photo the user
+        // changed from one the source already carries (`VCardPatch.PhotoEdit`).
+        refreshPhotoBaselines(account, assembly.photoContacts.mapNotNull { resolveId(it, results) })
 
         // Pass 3: memberships whose other end this batch never named. Both ends can arrive in any
         // order across batches, and a batch sees everything the run wrote before it: whatever is not
         // in [known] either does not exist, in which case the next run resolves it once it does, or is
         // counted as unresolved and logged rather than failing the batch around it.
         val reconciliation = ArrayList<ContentProviderOperation>()
-        for (membership in unresolved) {
+        for (membership in assembly.unresolved) {
             val contactId = membership.contact?.let { resolveId(it, results) }
                 ?: membership.contactUid?.let { known.contactIdsByUid[it]?.takeIf { known -> !known.pending }?.id }
             val groupId = membership.group?.let { resolveId(it, results) }
@@ -377,6 +409,9 @@ class ContactsMapper(
         body: String,
     ): Boolean {
         assertAccountRegistered(account)
+        // Every contacts change is read by `pendingRows`, which projects the version the guards below
+        // need; a change without one could only come from a reader that does not exist.
+        val version = checkNotNull(change.version) { "contact ${change.rowId} has no version to guard on" }
         val rawContactsUri = RawContacts.CONTENT_URI.forSyncAdapter(account)
         val identity = ContentValues().apply {
             put(RawContacts.SOURCE_ID, key)
@@ -393,18 +428,39 @@ class ContactsMapper(
         // an href of its own, the listing's copy of the body just PUT would insert one.
         resolver.update(rawContactsUri, identity, "${RawContacts._ID}=?", arrayOf(change.rowId.toString()))
 
+        // The photo baseline is read before the batch rather than after it: the batch leaves the photo
+        // row alone, so a digest taken now still describes the bytes the contact carries when it
+        // commits, and a digest taken after it could not be written under the version the batch
+        // matches on.
+        val baseline = displayPhotoBytes(account, change.rowId)?.let { photoDigest(it) }
+
+        val batch = ArrayList<ContentProviderOperation>()
         // `DIRTY` is the claim that the row is what the server holds, and only a row that did not move
-        // since it was serialised may make it. Zero rows affected means the user edited during the
-        // PUT: the edit is still pending and the next run sends it under the ETag stored above.
-        val cleared = resolver.update(
-            rawContactsUri,
-            ContentValues().apply { put(RawContacts.DIRTY, 0) },
-            change.version?.let { "${RawContacts._ID}=? AND ${RawContacts.VERSION}=?" }
-                ?: "${RawContacts._ID}=?",
-            change.version?.let { arrayOf(change.rowId.toString(), it.toString()) }
-                ?: arrayOf(change.rowId.toString()),
-        )
-        if (cleared == 0) {
+        // since it was serialised may make it. It is the first operation because every operation after
+        // it writes `Data`, which moves the very version this one matches on.
+        batch += ContentProviderOperation.newUpdate(rawContactsUri)
+            .withSelection(
+                "${RawContacts._ID}=? AND ${RawContacts.VERSION}=?",
+                arrayOf(change.rowId.toString(), version.toString()),
+            )
+            .withValue(RawContacts.DIRTY, 0)
+            .withValue(RawContacts.SYNC4, baseline)
+            .withExpectedCount(1)
+            .build()
+        // The row is now what the server holds, so the copy it keeps must be too: the next edit is
+        // patched onto these bytes, and the rows beside them are re-derived so that they carry the
+        // handles this text yields. Without that, a row the editor inserted would go on looking like a
+        // property nothing in the source matches, and its parameters would be rebuilt from columns on
+        // every edit after this one. They share the batch with the claim above so that a body the
+        // guard rejected cannot replace rows that describe a newer edit.
+        batch += rebaselineOperations(account, collection, change.rowId, key, body)
+
+        try {
+            resolver.applyBatch(authority, batch)
+        } catch (e: OperationApplicationException) {
+            // Zero rows matched the guard, so nothing of this batch is on disk: the user edited during
+            // the PUT, the edit is still pending, and the next run sends it under the ETag stored
+            // above.
             Log.w(
                 LOG_TAG,
                 "${collection.id}: contact ${change.rowId} changed while it was uploaded, " +
@@ -412,13 +468,6 @@ class ContactsMapper(
             )
             return false
         }
-
-        // The row is now what the server holds, so the copy it keeps must be too: the next edit is
-        // patched onto these bytes, and the rows beside them are re-derived so that they carry the
-        // handles this text yields. Without that, a row the editor inserted would go on looking like a
-        // property nothing in the source matches, and its parameters would be rebuilt from columns on
-        // every edit after this one.
-        rebaseline(account, collection, change.rowId, key, body)
         return true
     }
 
@@ -435,8 +484,16 @@ class ContactsMapper(
         )
     }
 
-    override fun revertLocalChange(account: Account, collection: DavCollection, change: LocalChange) {
+    // `sent` is not consulted: RawContacts.VERSION was read in the same snapshot that produced
+    // [change], so it tells a moved row from a still one whether or not a body reached the server.
+    override fun revertLocalChange(
+        account: Account,
+        collection: DavCollection,
+        change: LocalChange,
+        sent: Boolean,
+    ): Boolean {
         assertAccountRegistered(account)
+        val version = checkNotNull(change.version) { "contact ${change.rowId} has no version to guard on" }
         val values = ContentValues().apply {
             put(RawContacts.DELETED, 0)
             put(RawContacts.DIRTY, 0)
@@ -451,13 +508,24 @@ class ContactsMapper(
             }
         }
         // One request per resource, because a resource is one row here: a tombstone is the raw contact,
-        // and a locally created contact is a raw contact the provider will not delete.
-        resolver.update(
+        // and a locally created contact is a raw contact the provider will not delete. The version
+        // guards it because an edit made while the server was refusing the older body is newer than
+        // the refusal: dropping it here would be the lost update the refusal exists to prevent.
+        val reverted = resolver.update(
             RawContacts.CONTENT_URI.forSyncAdapter(account),
             values,
-            "${RawContacts._ID}=?",
-            arrayOf(change.rowId.toString()),
+            "${RawContacts._ID}=? AND ${RawContacts.VERSION}=?",
+            arrayOf(change.rowId.toString(), version.toString()),
         )
+        if (reverted == 0) {
+            Log.w(
+                LOG_TAG,
+                "${collection.id}: contact ${change.rowId} changed while it was uploaded, " +
+                    "withholding the revert and keeping the edit pending for the next run",
+            )
+            return false
+        }
+        return true
     }
 
     // ------------------------------------------------------------------ upload rows
@@ -574,24 +642,30 @@ class ContactsMapper(
      * freshly synced photo row read `data_version=1, data_sync2=0` — and the consequence was a
      * name-only edit replacing the server's 8932-character `PHOTO` with a 6660-character re-encode.
      * A hash of the bytes cannot invalidate itself by being stored: see issue #31.
+     *
+     * It is kept on the raw contact and not on the row it describes because [markUploaded] writes it
+     * inside the batch guarded by `RawContacts.VERSION`: a sync-adapter update of a raw-contact column
+     * moves no version, while a `Data` update moves the parent's, so a baseline stored on the photo
+     * row would invalidate the very guard it commits under. A row still carrying the old `Data.SYNC2`
+     * baseline reads as having none and is rebuilt once.
      */
     private fun photoEdit(account: Account, rowId: Long): PhotoEdit {
-        var present = false
-        var baseline: String? = null
-        resolver.query(
+        val present = resolver.query(
             Data.CONTENT_URI.forSyncAdapter(account),
-            arrayOf(Data.SYNC2),
+            arrayOf(BaseColumns._ID),
             "${Data.RAW_CONTACT_ID}=? AND ${Data.MIMETYPE}=?",
             arrayOf(rowId.toString(), Photo.CONTENT_ITEM_TYPE),
             null,
-        )?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                present = true
-                baseline = cursor.getString(0)
-            }
-        }
+        )?.use { cursor -> cursor.moveToFirst() } ?: false
         // No row at all: the photo is gone, and so is the source's property.
         if (!present) return PhotoEdit.Dropped
+        val baseline = resolver.query(
+            RawContacts.CONTENT_URI.forSyncAdapter(account),
+            arrayOf(RawContacts.SYNC4),
+            "${RawContacts._ID}=?",
+            arrayOf(rowId.toString()),
+            null,
+        )?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
         val bytes = displayPhotoBytes(account, rowId)
         if (bytes == null) {
             // A photo this app cannot spell is not a reason to delete one the user did not touch.
@@ -603,7 +677,7 @@ class ContactsMapper(
     }
 
     /**
-     * The photo bytes' identity, as stored in `Data.SYNC2`.
+     * The photo bytes' identity, as stored in `RawContacts.SYNC4`.
      *
      * SHA-256 and not the provider's own bookkeeping: a digest of the bytes is unchanged by the
      * writes this app makes around them, which is exactly what the previous baseline was not.
@@ -694,10 +768,12 @@ class ContactsMapper(
     }
 
     /**
-     * Rewrites the row's stored vCard to [body] and re-derives the rows beside it from the same text.
+     * The operations that rewrite the row's stored vCard to [body] and re-derive the rows beside it
+     * from the same text.
      *
-     * Both halves are one batch, so the copy and the rows it describes commit together: a copy newer
-     * than its rows would make the next edit look like it deleted everything the rows no longer spell.
+     * Operations rather than a batch of their own: they belong to [markUploaded]'s batch, behind the
+     * guard that says the row is still the one whose body was sent, and a copy newer than its rows
+     * would make the next edit look like it deleted everything the rows no longer spell.
      *
      * Two kinds of row survive the replace. A photo row is kept, not re-derived: the sent `PHOTO` may
      * be a link the read path fetched, which cannot be fetched back from here, and its bytes are what
@@ -705,63 +781,76 @@ class ContactsMapper(
      * `CATEGORIES` the upload carried came from these rows, and re-deriving would either lose the ones
      * the collection has no group for or delete the memberships outright.
      */
-    private fun rebaseline(account: Account, collection: DavCollection, rowId: Long, key: String, body: String) {
+    private fun rebaselineOperations(
+        account: Account,
+        collection: DavCollection,
+        rowId: Long,
+        key: String,
+        body: String,
+    ): List<ContentProviderOperation> {
         val parsed = parseVCard(body)
         if (parsed == null) {
             // Our own output failed to parse, which is a bug rather than input: keeping the old copy is
             // the safe half of the change, since the rows still describe something the server accepted.
             Log.e(LOG_TAG, "${collection.id}: uploaded body for contact $rowId does not parse back, not re-baselining")
-            return
+            return emptyList()
         }
         val dataUri = Data.CONTENT_URI.forSyncAdapter(account)
         val ref = RowRef.existing(rowId)
-        val batch = ArrayList<ContentProviderOperation>()
-        batch += ContentProviderOperation.newDelete(dataUri)
+        val operations = ArrayList<ContentProviderOperation>()
+        operations += ContentProviderOperation.newDelete(dataUri)
             .withSelection(
                 "${Data.RAW_CONTACT_ID}=? AND ${Data.MIMETYPE} NOT IN (?, ?)",
                 arrayOf(rowId.toString(), Photo.CONTENT_ITEM_TYPE, GroupMembership.CONTENT_ITEM_TYPE),
             )
             .build()
-        for (row in parsed.rows) batch += dataInsert(dataUri, ref, row)
-        batch += dataInsert(dataUri, ref, verbatimRow(Resource(key, body, parsed), collection))
-        resolver.applyBatch(authority, batch)
-        refreshPhotoBaselines(account, listOf(rowId))
+        for (row in parsed.rows) operations += dataInsert(dataUri, ref, row)
+        operations += dataInsert(dataUri, ref, verbatimRow(Resource(key, body, parsed), collection))
+        return operations
     }
 
     /**
-     * Records what the photo these uploads are based on looks like: `Data.SYNC2` holds a digest of the
-     * photo's bytes, and the next edit finding the same digest is what lets it copy the server's own
+     * Records what the photos a fetch just wrote look like: `RawContacts.SYNC4` holds a digest of the
+     * photo's bytes, and the next upload finding the same digest is what lets it copy the server's own
      * `PHOTO` through untouched instead of replacing it with a re-encode.
      *
      * Read after the rows are written, because the bytes that matter are the ones the provider kept —
-     * it re-encodes an image it is given, so what was handed to it is not what will be read back.
+     * it re-encodes an image it is given, so what was handed to it is not what will be read back. That
+     * second read cannot share the fetch's transaction, so each write carries the `RawContacts.VERSION`
+     * the photo row was found under: a miss is a contact the user edited between the two batches, and
+     * leaving its baseline absent only costs the photo being sent once more.
      *
-     * A digest and not `DATA_VERSION`: storing the baseline is itself an update of the row it
-     * describes, and AOSP's `data_updated` trigger increments `data_version` on every update, so a
-     * version baseline was false as soon as it was stored. Bytes do not move when they are described.
+     * The upload path records its own baseline inside [markUploaded]'s guarded batch, which is why
+     * this runs for the fetch alone.
      */
     private fun refreshPhotoBaselines(account: Account, rowIds: List<Long>) {
         if (rowIds.isEmpty()) return
-        val dataUri = Data.CONTENT_URI.forSyncAdapter(account)
         val placeholders = rowIds.joinToString(",") { "?" }
-        val photoRows = LinkedHashMap<Long, Long>()
+        // The `Data` view exposes the parent raw contact's version, so the photo row and the version
+        // its baseline is written under come out of one query.
+        val versions = LinkedHashMap<Long, Long>()
         resolver.query(
-            dataUri,
-            arrayOf(BaseColumns._ID, Data.RAW_CONTACT_ID),
+            Data.CONTENT_URI.forSyncAdapter(account),
+            arrayOf(Data.RAW_CONTACT_ID, RawContacts.VERSION),
             "${Data.RAW_CONTACT_ID} IN ($placeholders) AND ${Data.MIMETYPE}=?",
             rowIds.map { it.toString() }.toTypedArray() + Photo.CONTENT_ITEM_TYPE,
             null,
         )?.use { cursor ->
-            while (cursor.moveToNext()) photoRows[cursor.getLong(0)] = cursor.getLong(1)
+            while (cursor.moveToNext()) versions[cursor.getLong(0)] = cursor.getLong(1)
         }
-        if (photoRows.isEmpty()) return
+        if (versions.isEmpty()) return
+        val rawContactsUri = RawContacts.CONTENT_URI.forSyncAdapter(account)
         val batch = ArrayList<ContentProviderOperation>()
-        for ((dataRowId, contactId) in photoRows) {
+        for ((contactId, version) in versions) {
             // Unreadable bytes leave the baseline alone rather than writing one that describes
             // nothing: the next comparison then rebuilds the photo, which is the safe direction.
             val digest = displayPhotoBytes(account, contactId)?.let { photoDigest(it) } ?: continue
-            batch += ContentProviderOperation.newUpdate(ContentUris.withAppendedId(dataUri, dataRowId))
-                .withValues(ContentValues().apply { put(Data.SYNC2, digest) })
+            batch += ContentProviderOperation.newUpdate(rawContactsUri)
+                .withSelection(
+                    "${RawContacts._ID}=? AND ${RawContacts.VERSION}=?",
+                    arrayOf(contactId.toString(), version.toString()),
+                )
+                .withValue(RawContacts.SYNC4, digest)
                 .build()
         }
         if (batch.isEmpty()) return
@@ -821,9 +910,18 @@ class ContactsMapper(
             ref = RowRef.pending(index)
         } else {
             ref = RowRef.existing(existing.id)
+            // The server's copy may only be written over the row the snapshot read: the delete and the
+            // inserts below depend on this row being the one that was clean, and an expected-count
+            // miss rolls all three back together. `DIRTY` and `DELETED` are matched as well as the
+            // version because a star the user toggled dirties a row without moving its version.
             batch += ContentProviderOperation.newUpdate(rawContactsUri)
-                .withSelection("${RawContacts._ID}=?", arrayOf(existing.id.toString()))
+                .withSelection(
+                    "${RawContacts._ID}=? AND ${RawContacts.VERSION}=? AND ${RawContacts.DIRTY}=0 " +
+                        "AND ${RawContacts.DELETED}=0",
+                    arrayOf(existing.id.toString(), existing.version.toString()),
+                )
                 .withValues(sync)
+                .withExpectedCount(1)
                 .build()
             // The server is the source of truth, so nothing the previous run wrote may survive: a
             // phone number the server has since dropped would otherwise stay on the contact forever.
@@ -1130,6 +1228,9 @@ class ContactsMapper(
      * The same lookup for contacts, carrying the two flags that decide whether a write may touch the
      * row: `DIRTY` is an edit waiting to be uploaded and `DELETED` is a tombstone — both of them rows
      * the server's copy of that resource must not be written over.
+     *
+     * `VERSION` comes out of the same query as those flags, so that what the write guards on and what
+     * the decision to write was made on are one snapshot of the row.
      */
     private fun contactsByName(
         uri: Uri,
@@ -1142,7 +1243,7 @@ class ContactsMapper(
         val contacts = HashMap<String, KnownContact>()
         eachNamedRow(
             uri,
-            arrayOf(BaseColumns._ID, column, RawContacts.DIRTY, RawContacts.DELETED),
+            arrayOf(BaseColumns._ID, column, RawContacts.DIRTY, RawContacts.DELETED, RawContacts.VERSION),
             column,
             selection,
             scopeArgs,
@@ -1151,7 +1252,11 @@ class ContactsMapper(
             val name = cursor.getString(1) ?: return@eachNamedRow
             contacts.putIfAbsent(
                 name,
-                KnownContact(cursor.getLong(0), pending = cursor.getLong(2) != 0L || cursor.getLong(3) != 0L),
+                KnownContact(
+                    cursor.getLong(0),
+                    pending = cursor.getLong(2) != 0L || cursor.getLong(3) != 0L,
+                    version = cursor.getLong(4),
+                ),
             )
         }
         return contacts
@@ -1193,8 +1298,11 @@ class ContactsMapper(
         val groupIdsByTitle: Map<String, Long>,
     )
 
-    /** One contact row, and whether the phone's version of it is one the server must not overwrite. */
-    private class KnownContact(val id: Long, val pending: Boolean)
+    /**
+     * One contact row, whether the phone's version of it is one the server must not overwrite, and the
+     * provider's version counter, which is what a write over it matches on.
+     */
+    private class KnownContact(val id: Long, val pending: Boolean, val version: Long)
 
     private fun queryId(uri: Uri, selection: String, args: Array<String>): Long? =
         resolver.query(uri, arrayOf(BaseColumns._ID), selection, args, null)?.use { cursor ->
@@ -1329,6 +1437,20 @@ class ContactsMapper(
         val contactUid: String? = null,
         val group: RowRef? = null,
         val groupTitle: String? = null,
+    )
+
+    /**
+     * One attempt at [upsert]'s batch, and what the passes after it need from that attempt.
+     *
+     * A batch the provider rolled back leaves nothing of its attempt behind, so the passes that follow
+     * must read the attempt that actually committed: a photo to baseline or a membership to reconcile
+     * that belongs to a discarded batch names a row nobody wrote.
+     */
+    private class Assembly(
+        val batch: ArrayList<ContentProviderOperation>,
+        val photoContacts: List<RowRef>,
+        val unresolved: List<DeferredMembership>,
+        val stats: UpsertStats,
     )
 
     /** What one [upsert] did, in the numbers that make a sync readable in a log. */

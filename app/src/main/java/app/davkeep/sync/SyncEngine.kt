@@ -505,11 +505,19 @@ class SyncEngine(
         // the flag again. It stays dirty and is counted refused on every run until a Collection can
         // take it.
         if (!collection.writable) {
+            var refusedReverted = false
+            val refusedHeld = mutableSetOf<String>()
             for (change in revertibleOnRefusal(changes)) {
                 ensureAccountRegistered(account)
-                mapper.revertLocalChange(account, collection, change)
+                // A row that moved while this ran is newer than the refusal, so it keeps its edit
+                // and is kept out of this run's fetch rather than being written over by it.
+                if (mapper.revertLocalChange(account, collection, change, sent = false)) {
+                    refusedReverted = true
+                } else {
+                    change.key?.let { refusedHeld += it }
+                }
             }
-            return Uploads(refused = changes.size, reverted = changes.isNotEmpty())
+            return Uploads(refused = changes.size, reverted = refusedReverted, held = refusedHeld)
         }
 
         var uploaded = 0
@@ -542,9 +550,17 @@ class SyncEngine(
                                 // The server's item moved after this phone last saw it, so the
                                 // deletion is given up and the run's fetch brings the server's version
                                 // back onto the row. Server wins, as it does for an update.
-                                mapper.revertLocalChange(account, collection, change)
-                                conflicts += change.key
-                                reverted = true
+                                //
+                                // Unless the row moved here too: a deletion undone while the server
+                                // was answering is not this run's to resolve, and calling it a
+                                // conflict would report a resolution that did not happen.
+                                if (mapper.revertLocalChange(account, collection, change, sent = true)) {
+                                    conflicts += change.key
+                                    reverted = true
+                                } else {
+                                    pending++
+                                    held += change.key
+                                }
                             }
 
                             is ChangeAction.MarkUploaded ->
@@ -630,9 +646,16 @@ class SyncEngine(
                                 // runs, or nothing links the row to the resource the server already
                                 // holds and the fetch inserts it a second time.
                                 val reverting = if (creating) change.copy(key = target) else change
-                                mapper.revertLocalChange(account, collection, reverting)
-                                conflicts += (change.key ?: target)
-                                reverted = true
+                                // A revert the provider withheld means the row is newer than the
+                                // 412, so this run neither resolved the conflict nor may fetch over
+                                // it: both would discard the edit made while the server said no.
+                                if (mapper.revertLocalChange(account, collection, reverting, sent = true)) {
+                                    conflicts += (change.key ?: target)
+                                    reverted = true
+                                } else {
+                                    pending++
+                                    held += (change.key ?: target)
+                                }
                             }
 
                             ChangeAction.Purge -> error("a PUT is never answered like a DELETE")

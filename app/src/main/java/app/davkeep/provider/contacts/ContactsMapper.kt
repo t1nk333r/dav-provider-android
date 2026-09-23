@@ -392,16 +392,17 @@ class ContactsMapper(
      * be the edit waiting to be sent, and claiming it matches the server would drop that edit
      * silently, which is the same failure pointing the other way.
      *
-     * Contacts with no photo get a marker rather than being left empty, so that the query converges
-     * to nothing after one run instead of reading every photo-less contact's bytes on every run. A
-     * photo added later hashes to something else, which is exactly the "changed" answer it should be.
+     * Contacts with no photo get a marker rather than being left empty, and [markUploaded] writes the
+     * same marker, so that the query converges to nothing instead of reading every photo-less
+     * contact's bytes on every run. A photo added later hashes to something else, which is exactly the
+     * "changed" answer it should be.
      */
     private fun adoptPhotoBaselines(account: Account, collection: DavCollection) {
         val candidates = ArrayList<Pair<Long, Long>>()
         resolver.query(
             RawContacts.CONTENT_URI.forSyncAdapter(account),
             arrayOf(RawContacts._ID, RawContacts.VERSION),
-            "${collectionSelection(BASELINE_MISSING)}",
+            collectionSelection(BASELINE_MISSING),
             collectionArgs(account, collection),
             null,
         )?.use { cursor ->
@@ -409,25 +410,73 @@ class ContactsMapper(
         }
         if (candidates.isEmpty()) return
 
-        val batch = ArrayList<ContentProviderOperation>()
-        for ((rowId, version) in candidates) {
-            val digest = displayPhotoBytes(account, rowId)?.let { photoDigest(it) } ?: NO_PHOTO
-            // Guarded like every other write that claims a row is current: an edit that arrived
-            // between the query and this batch leaves the contact without a baseline, and the next
-            // run offers it again.
-            batch += ContentProviderOperation
-                .newUpdate(RawContacts.CONTENT_URI.forSyncAdapter(account))
-                .withSelection(
-                    "${RawContacts._ID}=? AND ${RawContacts.VERSION}=? AND " +
-                        "${RawContacts.DIRTY}=0 AND ${RawContacts.DELETED}=0",
-                    arrayOf(rowId.toString(), version.toString()),
-                )
-                .withValue(RawContacts.SYNC4, digest)
-                .build()
+        // Which of them have a photo at all, in one query per chunk: a contact without a photo row
+        // needs no bytes read to know its answer, and on an address book of thousands that is most of
+        // them.
+        val withPhoto = contactsWithPhotoRow(account, candidates.map { it.first })
+        val rawContactsUri = RawContacts.CONTENT_URI.forSyncAdapter(account)
+        var adopted = 0
+        var unreadable = 0
+        // Chunked because an address book synced before this existed can hold thousands of candidates,
+        // and one batch of all of them overflows the Binder transaction: the whole batch then fails,
+        // and fails identically on every later run, so exactly the address books this is for would
+        // never converge.
+        for (chunk in candidates.chunked(BASELINE_OPERATIONS_PER_BATCH)) {
+            val batch = ArrayList<ContentProviderOperation>()
+            for ((rowId, version) in chunk) {
+                val baseline = if (rowId in withPhoto) {
+                    // A photo row whose bytes cannot be read is left without a baseline rather than
+                    // given the no-photo marker: marking it would claim there is no photo, and bytes
+                    // that became readable later would then compare as changed.
+                    displayPhotoBytes(account, rowId)?.let { photoDigest(it) } ?: run { unreadable++; null }
+                } else {
+                    NO_PHOTO
+                } ?: continue
+                // Guarded like every other write that claims a row is current: an edit that arrived
+                // between the query and this batch leaves the contact without a baseline, and the next
+                // run offers it again.
+                batch += ContentProviderOperation.newUpdate(rawContactsUri)
+                    .withSelection(
+                        "${RawContacts._ID}=? AND ${RawContacts.VERSION}=? AND " +
+                            "${RawContacts.DIRTY}=0 AND ${RawContacts.DELETED}=0",
+                        arrayOf(rowId.toString(), version.toString()),
+                    )
+                    .withValue(RawContacts.SYNC4, baseline)
+                    .build()
+            }
+            if (batch.isEmpty()) continue
+            try {
+                adopted += resolver.applyBatch(authority, batch).count { (it.count ?: 0) > 0 }
+            } catch (e: Exception) {
+                // This chunk is left for the next run; the others still converge.
+                Log.w(LOG_TAG, "${collection.id}: could not adopt photo baselines for ${batch.size} contacts", e)
+            }
         }
-        runCatching { resolver.applyBatch(authority, batch) }
-            .onFailure { Log.w(LOG_TAG, "${collection.id}: could not adopt photo baselines", it) }
-        Log.i(LOG_TAG, "${collection.id}: adopted a photo baseline for ${batch.size} contacts")
+        Log.i(
+            LOG_TAG,
+            "${collection.id}: adopted a photo baseline for $adopted of ${candidates.size} contacts" +
+                if (unreadable > 0) ", $unreadable with an unreadable photo left for a later run" else "",
+        )
+    }
+
+    /**
+     * Which of [rowIds] have a photo row, whatever its bytes.
+     *
+     * The distinction the baselines turn on: no row means no photo, which [NO_PHOTO] records, while a
+     * row whose bytes cannot be read is a photo nobody can describe yet.
+     */
+    private fun contactsWithPhotoRow(account: Account, rowIds: List<Long>): Set<Long> {
+        val found = HashSet<Long>()
+        for (chunk in rowIds.chunked(SQL_VARIABLES_PER_STATEMENT)) {
+            resolver.query(
+                Data.CONTENT_URI.forSyncAdapter(account),
+                arrayOf(Data.RAW_CONTACT_ID),
+                "${Data.RAW_CONTACT_ID} IN (${chunk.joinToString(",") { "?" }}) AND ${Data.MIMETYPE}=?",
+                chunk.map { it.toString() }.toTypedArray() + Photo.CONTENT_ITEM_TYPE,
+                null,
+            )?.use { cursor -> while (cursor.moveToNext()) found += cursor.getLong(0) }
+        }
+        return found
     }
 
     override fun serialize(account: Account, collection: DavCollection, change: LocalChange): UploadBody? {
@@ -487,7 +536,12 @@ class ContactsMapper(
         // row alone, so a digest taken now still describes the bytes the contact carries when it
         // commits, and a digest taken after it could not be written under the version the batch
         // matches on.
-        val baseline = displayPhotoBytes(account, change.rowId)?.let { photoDigest(it) }
+        //
+        // A contact without a photo is recorded as having none, so that the next run's adoption does
+        // not find it baseline-less and read it again; a photo whose bytes cannot be read keeps the
+        // baseline it had rather than being recorded as absent.
+        val hasPhoto = contactsWithPhotoRow(account, listOf(change.rowId)).isNotEmpty()
+        val baseline = if (hasPhoto) displayPhotoBytes(account, change.rowId)?.let { photoDigest(it) } else NO_PHOTO
 
         val batch = ArrayList<ContentProviderOperation>()
         // `DIRTY` is the claim that the row is what the server holds, and only a row that did not move
@@ -499,7 +553,7 @@ class ContactsMapper(
                 arrayOf(change.rowId.toString(), version.toString()),
             )
             .withValue(RawContacts.DIRTY, 0)
-            .withValue(RawContacts.SYNC4, baseline)
+            .apply { if (baseline != null) withValue(RawContacts.SYNC4, baseline) }
             .withExpectedCount(1)
             .build()
         // The row is now what the server holds, so the copy it keeps must be too: the next edit is
@@ -900,9 +954,14 @@ class ContactsMapper(
             // Unreadable bytes leave the baseline alone rather than writing one that describes
             // nothing: the next comparison then rebuilds the photo, which is the safe direction.
             val digest = displayPhotoBytes(account, contactId)?.let { photoDigest(it) } ?: continue
+            // DIRTY as well as VERSION: the version above is read after the fetch's batch, so an editor
+            // that saved a new photo in between moved the version *before* it was read, and the version
+            // alone would then match — recording the user's new photo as what the server holds, and
+            // the upload that should send it would copy the server's old one through instead.
             batch += ContentProviderOperation.newUpdate(rawContactsUri)
                 .withSelection(
-                    "${RawContacts._ID}=? AND ${RawContacts.VERSION}=?",
+                    "${RawContacts._ID}=? AND ${RawContacts.VERSION}=? AND " +
+                        "${RawContacts.DIRTY}=0 AND ${RawContacts.DELETED}=0",
                     arrayOf(contactId.toString(), version.toString()),
                 )
                 .withValue(RawContacts.SYNC4, digest)
@@ -1608,5 +1667,12 @@ class ContactsMapper(
          * the two can never be confused, and a photo added later cannot hash to it.
          */
         const val NO_PHOTO = "none"
+
+        /**
+         * Baseline writes per batch. Each operation parcels a sync-adapter URI, a selection and its
+         * arguments — a few hundred bytes — and the Binder transaction a batch travels in is 1 MiB, so
+         * this keeps a batch an order of magnitude inside it.
+         */
+        const val BASELINE_OPERATIONS_PER_BATCH = 200
     }
 }

@@ -1,0 +1,4 @@
+A new calendar event that the server rejected as a duplicate, while its
+server copy could not be fetched, no longer holds a later edit back forever.
+The server's version now wins, visibly, and an event the server lost is
+created again with its edits.

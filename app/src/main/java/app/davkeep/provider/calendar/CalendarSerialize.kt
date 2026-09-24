@@ -153,8 +153,15 @@ internal data class ResourceRows(
 )
 
 internal sealed interface Serialized {
-    /** [text] is the resource to `PUT`; [notes] name what it does not carry, for the run's log. */
-    data class Written(val text: String, val notes: List<String>) : Serialized
+    /**
+     * [text] is the resource to `PUT`; [notes] name what it does not carry, for the run's log.
+     *
+     * [unchanged] says no property of the source was rewritten: the rows spell the resource the way
+     * the server already holds it, and the bytes differ from the stored copy in nothing but the
+     * `PRODID` naming the last writer. A row is flagged dirty by writes that reach no property at
+     * all — an event's access level is one — and that is what this tells from a real edit.
+     */
+    data class Written(val text: String, val notes: List<String>, val unchanged: Boolean = false) : Serialized
 
     /** The rows do not represent the resource: nothing may be sent, and the user is told why. */
     data class Held(val reason: String) : Serialized
@@ -302,6 +309,10 @@ internal fun serializeResource(rows: ResourceRows, now: Long, deviceZone: ZoneId
     val claimed = HashSet<VEvent>()
     val cancelled = ArrayList<IcalDate>()
     val live = ArrayList<Pair<EventRow, OverridePart?>>()
+    // Whether anything of the source was rewritten. A provider flags a row dirty for writes that
+    // reach no property of the resource — an event's access level, a contact's star — and a body
+    // that changed nothing is one the server already holds.
+    var touched = false
     for (row in rows.overrides) {
         val part = parts.firstOrNull { it.component !in claimed && it.matches(row) }
         if (part != null) claimed += part.component
@@ -311,7 +322,10 @@ internal fun serializeResource(rows: ResourceRows, now: Long, deviceZone: ZoneId
             row.originalInstanceTime?.let {
                 cancelled += instanceOf(it, row.originalAllDay, masterForm, masterZoneId, masterZone)
             }
-            if (part != null) calendar.dropComponent(part.component)
+            if (part != null) {
+                calendar.dropComponent(part.component)
+                touched = true
+            }
             continue
         }
         live += row to part
@@ -323,10 +337,11 @@ internal fun serializeResource(rows: ResourceRows, now: Long, deviceZone: ZoneId
         // without a `_SYNC_ID`. Locally the master's own occurrence is back — an exception row is
         // what removed it from the expansion — so the component goes and no EXDATE is added for it.
         calendar.dropComponent(part.component)
+        touched = true
         notes += "one changed instance the phone no longer holds was removed"
     }
 
-    patchComponent(
+    touched = patchComponent(
         component = masterComponent,
         row = rows.master,
         base = masterBase,
@@ -338,7 +353,7 @@ internal fun serializeResource(rows: ResourceRows, now: Long, deviceZone: ZoneId
         deviceZone = deviceZone,
         now = now,
         notes = notes,
-    )
+    ) || touched
     if (masterEvent.unrepresentableDates > 0 && masterBase.exdate != rows.master.values.exdate) {
         notes += "the recurrence's period dates were not kept"
     }
@@ -350,9 +365,10 @@ internal fun serializeResource(rows: ResourceRows, now: Long, deviceZone: ZoneId
         }
         if (part == null) {
             calendar.addComponent(newOverride(masterComponent, row, masterForm, masterZoneId, components.zones, deviceZone, now))
+            touched = true
             continue
         }
-        patchComponent(
+        touched = patchComponent(
             component = part.component,
             row = row,
             base = eventValuesOf(part.event, part.times),
@@ -364,12 +380,12 @@ internal fun serializeResource(rows: ResourceRows, now: Long, deviceZone: ZoneId
             deviceZone = deviceZone,
             now = now,
             notes = notes,
-        )
+        ) || touched
     }
 
     calendar.replaceProperty(ProdId(APP_PRODID))
     appendMissingZones(calendar)
-    return Serialized.Written(render(calendar), notes)
+    return Serialized.Written(render(calendar), notes, unchanged = !touched)
 }
 
 /** One override component, parsed, with the occurrence it replaces. */
@@ -413,7 +429,8 @@ private fun formOf(date: IcalDate): TimeForm = when {
 }
 
 /**
- * Rewrites one component from its row, property by property, and nothing else.
+ * Rewrites one component from its row, property by property, and nothing else, and says whether it
+ * rewrote anything at all.
  *
  * Every property the row has no column for is left exactly as the source wrote it: that is what
  * keeps the read path's loss list from becoming the upload's.
@@ -430,7 +447,7 @@ private fun patchComponent(
     deviceZone: ZoneId,
     now: Long,
     notes: MutableList<String>,
-) {
+): Boolean {
     val values = row.values
     var sequenceChanged = false
     var touched = false
@@ -489,7 +506,7 @@ private fun patchComponent(
         touched = true
     }
 
-    if (!touched) return
+    if (!touched) return false
     // RFC 5545 §3.8.7.4: the revision counter moves for the properties another client would have to
     // re-read — the times, the recurrence and the status — and not for a renamed summary.
     if (sequenceChanged) {
@@ -498,6 +515,7 @@ private fun patchComponent(
     }
     component.replaceProperty(DtStamp(Instant.ofEpochMilli(now)))
     component.replaceProperty(LastModified(Instant.ofEpochMilli(now)))
+    return true
 }
 
 private fun timesDiffer(values: EventValues, base: EventValues): Boolean =

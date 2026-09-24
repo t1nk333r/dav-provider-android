@@ -150,10 +150,17 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
      * A tombstone is not an item: the user deleted it, and a listing that still names its href must
      * not talk this mapper into writing the server's copy back over the deletion.
      *
-     * A row whose stored text is missing — every row an earlier build wrote — is returned with a
-     * null ETag, so the engine refetches it once and the text is there from then on. A resource that
-     * was *too large* to keep is the exception: it keeps its ETag, because refetching it every run
-     * would never make it patchable.
+     * A row whose stored text is missing is returned with a null ETag, so a listing that names it
+     * fetches it and the text is there from then on. The fetch and the answer to an accepted upload
+     * both write a `_SYNC_ID` together with the source, and did so already in 0.6.0, the first build
+     * of this application id, so no upgrade leaves such a row. One path does: a create the server
+     * answered `412` is reverted under the name it was PUT to, and that name arrives with no text.
+     * The restore that follows every revert fetches it and writes the text; only if that restore
+     * keeps failing, and the user edits the event meanwhile, does the row stay named, text-less and
+     * dirty — and then its edit is held out of every upload for want of a base to patch, #35. It is
+     * also only as good as the listing: a `sync-collection` delta names what changed, not what this
+     * phone lacks. A resource that was *too large* to keep is not in the set at all: it keeps its
+     * ETag, because refetching it every run would never make it patchable.
      */
     override fun localItems(account: Account, collection: DavCollection): Map<String, String?> {
         val calendarId = findCalendarId(account, collection) ?: return emptyMap()
@@ -466,7 +473,7 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
         return when (val serialized = serializeResource(rows, System.currentTimeMillis(), ZoneId.systemDefault())) {
             is Serialized.Written -> {
                 serialized.notes.forEach { Log.i(TAG, "$name: $it") }
-                UploadBody(serialized.text, uid)
+                UploadBody(serialized.text, uid, unchanged = serialized.unchanged)
             }
 
             is Serialized.Held -> {
@@ -561,6 +568,36 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
         val pending = stillPending(account, calendarId, change)
         if (pending) {
             Log.i(TAG, "Row ${change.rowId} moved while its upload was in flight; it stays pending")
+        }
+        return !pending
+    }
+
+    /**
+     * Clears `DIRTY` for a resource whose bytes say nothing the server does not already hold.
+     *
+     * Nothing else is written. The identity, the ETag, the stored source and the override count all
+     * still describe what the server has — that is what made the body unchanged in the first place —
+     * and rewriting them would only invite the two to drift.
+     *
+     * The guard is [serialize]'s sentinel, exactly as in [markUploaded]: a row an editor touched
+     * while step U was deciding is no longer [IN_FLIGHT] and keeps its flag, and a resource with any
+     * such row stays pending, so a real edit made in that window is still sent by the next run.
+     */
+    override fun acknowledgeUnchanged(account: Account, collection: DavCollection, change: LocalChange): Boolean {
+        assertAccountRegistered(account)
+        val calendarId = findCalendarId(account, collection) ?: return false
+        resolver.update(
+            eventsUri(account),
+            ContentValues().apply {
+                put(Events.DIRTY, 0)
+                putNull(Events.MUTATORS)
+            },
+            "${resourceSelection(calendarId, change)} AND ${Events.DIRTY}=$IN_FLIGHT AND ${Events.DELETED}=0",
+            resourceArgs(calendarId, change),
+        )
+        val pending = stillPending(account, calendarId, change)
+        if (pending) {
+            Log.i(TAG, "Row ${change.rowId} moved while step U read it; it stays pending")
         }
         return !pending
     }

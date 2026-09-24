@@ -725,6 +725,24 @@ class SyncEngine(
                         val target = change.key
                             ?: createPath(session.collectionUrl.encodedPath, collection, body.uid)
 
+                        // A body that says nothing the server does not already hold is not sent at
+                        // all. `RawContacts.STARRED`, a ringtone and `SEND_TO_VOICEMAIL` flag a
+                        // contact dirty without touching a `Data` row, and an event's access level
+                        // does the same for a calendar: none of them reaches the resource, so the
+                        // `PUT` carries the bytes the server has, plus this app's own `PRODID` and
+                        // `REV`. It is acknowledged here instead, under the guard the answer to a
+                        // real upload uses, and counted neither uploaded nor pending: nothing went
+                        // out, and nothing is left to send. A row that moved while step U was
+                        // deciding keeps its flag — that edit is newer than this decision and is
+                        // what the next run sends — and is held out of this run's fetch.
+                        if (!creating && body.unchanged) {
+                            if (!mapper.acknowledgeUnchanged(account, collection, change)) {
+                                pending++
+                                held += target
+                            }
+                            continue
+                        }
+
                         // An update of a resource the server already holds is never sent
                         // unconditionally. A null ETag on such a row says this phone does not know
                         // which version the server has, and a `PUT` without `If-Match` would take

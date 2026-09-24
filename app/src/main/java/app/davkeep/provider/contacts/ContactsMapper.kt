@@ -500,7 +500,33 @@ class ContactsMapper(
             Log.w(LOG_TAG, "${collection.id}: contact ${change.rowId} does not parse, leaving it for the next run")
             return null
         }
-        return UploadBody(bytes.text, bytes.uid.orEmpty())
+        return UploadBody(bytes.text, bytes.uid.orEmpty(), unchanged = bytes.unchanged)
+    }
+
+    /**
+     * Clears `DIRTY` for a contact whose vCard says nothing the server does not already hold.
+     *
+     * `RawContacts.VERSION` counts the rows a vCard is made of, and a raw-contact-level write —
+     * `STARRED`, `CUSTOM_RINGTONE`, `SEND_TO_VOICEMAIL`, `PINNED` — sets the flag without moving it,
+     * which is exactly the shape that arrives here. The guard is still the version step U read: an
+     * edit that landed since moved it, and that edit is one nothing has sent.
+     */
+    override fun acknowledgeUnchanged(account: Account, collection: DavCollection, change: LocalChange): Boolean {
+        assertAccountRegistered(account)
+        val version = checkNotNull(change.version) { "contact ${change.rowId} has no version to guard on" }
+        val cleared = resolver.update(
+            RawContacts.CONTENT_URI.forSyncAdapter(account),
+            ContentValues().apply { put(RawContacts.DIRTY, 0) },
+            "${RawContacts._ID}=? AND ${RawContacts.VERSION}=?",
+            arrayOf(change.rowId.toString(), version.toString()),
+        )
+        if (cleared == 0) {
+            Log.i(
+                LOG_TAG,
+                "${collection.id}: contact ${change.rowId} changed while step U read it; it stays pending",
+            )
+        }
+        return cleared > 0
     }
 
     override fun markUploaded(

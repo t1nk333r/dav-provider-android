@@ -129,6 +129,23 @@ stored text against the rows on every run — dragging every resource's bytes th
 which `localItems` exists to avoid — or to do nothing and leave a divergence no listing ever corrects,
 since the master's ETag does not move.
 
+**Amended:** a body the server already holds is not sent. `DIRTY` means "an editor wrote here", not "the
+resource changed": `CalendarProvider2` flags an event for an access level or a colour, and
+`ContactsProvider2` flags a raw contact for `STARRED`, a ringtone or `SEND_TO_VOICEMAIL` — none of which
+reaches a property this app serialises. Measured on a device against Radicale: starring a synced contact
+sent a `PUT` whose body differed from the server's copy in `PRODID` and `REV` alone, and un-starring it
+sent one byte-identical to the stored source but for `REV`; an event's access level sent a body identical
+to the server's copy. So step U asks the mapper first, and a body that says nothing new is acknowledged
+locally: the row's `DIRTY` is cleared under the very guard the answer to a real upload uses — the contact's
+`RawContacts.VERSION`, the resource's `DIRTY=2` sentinel — and the change is counted neither uploaded nor
+pending. The guard is what keeps this from becoming the backstop this ADR deleted: a row a real edit moved
+while step U was deciding matches nothing, keeps its flag and is sent by the next run. Nothing else is
+written, because nothing else moved: the identity, the ETag, the stored source and the override count all
+still describe what the server has. The comparison is the resource and not the bytes — the source as
+parsed and the body as patched, through one writer, before this app's own `PRODID` and `REV` are stamped —
+because a source the server wrote spells the same card its own way, and a byte comparison would have
+skipped only the second pointless upload of each pair.
+
 ## Consequences
 
 - A conflict loses the phone's edit deliberately, and says so: the log names the resource, and the Collection stays `OK`, because nothing is left to retry.

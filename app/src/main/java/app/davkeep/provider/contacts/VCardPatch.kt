@@ -33,8 +33,16 @@ import ezvcard.property.Telephone as EzTelephone
 import ezvcard.property.Title as EzTitle
 import ezvcard.property.Url as EzUrl
 
-/** The bytes of one contact for upload, and the UID they carry. */
-internal class ContactBytes(val text: String, val uid: String?)
+/**
+ * The bytes of one contact for upload, the UID they carry, and whether they say anything new.
+ *
+ * [unchanged] compares the card as the rows left it with the card as the source spelled it, both
+ * written by the same writer and both before the `PRODID` and `REV` below are stamped: equal means
+ * every property this app owns came out the way the server already has it. `DIRTY` is set by writes
+ * that touch no property at all — `STARRED`, a ringtone, `SEND_TO_VOICEMAIL` — and this is what
+ * tells such a row from one the user typed into.
+ */
+internal class ContactBytes(val text: String, val uid: String?, val unchanged: Boolean = false)
 
 /**
  * What the contact's photo row says about `PHOTO`.
@@ -102,6 +110,12 @@ internal fun patchContact(
     val current = rows.groupBy { it.mimeType }
     val derived = mapVCard(vcard).rows.groupBy { it.mimeType }
 
+    // What the source says, written by the writer that writes the upload: the rebuilds below mutate
+    // the card in place, so the comparison has to be taken before they run, and taking it through
+    // the same writer is what keeps a difference in folding or property order from reading as an
+    // edit. A card built from the rows alone has nothing to compare against and is never unchanged.
+    val before = if (source == null) null else write(vcard)
+
     rebuildName(vcard, current, derived, rows, created = source == null)
     rebuildNicknames(vcard, current, derived)
     rebuildClass(vcard, EzTelephone::class.java, "TEL", current, derived, PHONE_COLUMNS, ::rewritePhone, ::buildPhone)
@@ -114,6 +128,8 @@ internal fun patchContact(
     rebuildCategories(vcard, categories)
     rebuildPhoto(vcard, photo)
 
+    val unchanged = before != null && before == write(vcard)
+
     // This app's own product id, and the time of the write: the source's are the server's bookkeeping,
     // not something an edit preserves. The default one on the writer chain is off, so exactly one of
     // ours reaches the server.
@@ -122,10 +138,15 @@ internal fun patchContact(
     vcard.setRevision(now)
 
     return ContactBytes(
-        text = Ezvcard.write(vcard).version(versionToWrite(vcard)).prodId(false).go(),
+        text = write(vcard),
         uid = vcard.uid?.value ?: newUid,
+        unchanged = unchanged,
     )
 }
+
+/** One spelling of the writer, so that the comparison above and the upload cannot disagree. */
+private fun write(vcard: VCard): String =
+    Ezvcard.write(vcard).version(versionToWrite(vcard)).prodId(false).go()
 
 /**
  * The version to write.

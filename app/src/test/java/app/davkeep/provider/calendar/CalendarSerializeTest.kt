@@ -236,6 +236,20 @@ class CalendarSerializeTest {
         assertTrue(serializeResource(rowsOf(MEETING), NOW, ZONE) is Serialized.Held)
     }
 
+    @Test
+    fun `rows that still say what the source says produce nothing new to send`() {
+        // An event's access level, its colour, an attendee flag: the provider marks the row dirty
+        // for writes that reach no property this app sends, and the body then says exactly what the
+        // server already holds. Step U skips such a request, so the flag has to be right in both
+        // directions — an untouched resource, and one real edit to it.
+        val rows = rowsOf(SOURCE)
+
+        assertTrue(serialized(rows).unchanged)
+        assertFalse(serialized(rows.withTitle("Abendessen")).unchanged)
+        // A component no row claims is dropped, which the server has to be told about.
+        assertFalse(serialized(rows.copy(overrides = rows.overrides.drop(1))).unchanged)
+    }
+
     // ---------------------------------------------------------------- fixtures
 
     /** The rows the read path would write for [source]: the state an untouched upload sees. */
@@ -270,7 +284,9 @@ class CalendarSerializeTest {
             originalInstanceTime = times.originalInstanceTime,
             originalAllDay = times.originalAllDay ?: false,
             deleted = deleted,
-            values = eventValuesOf(event, times),
+            // `Events.AVAILABILITY` has no null: a source without `TRANSP` reads back as OPAQUE,
+            // and a row that said null would look like an edit to every upload.
+            values = eventValuesOf(event, times).let { it.copy(transparency = it.transparency ?: Transparency.OPAQUE) },
             reminders = reminders,
         )
     }
@@ -279,6 +295,9 @@ class CalendarSerializeTest {
         val serialized = serializeResource(rows, NOW, ZONE)
         return (serialized as? Serialized.Written)?.text ?: error("held: $serialized")
     }
+
+    private fun serialized(rows: ResourceRows): Serialized.Written =
+        serializeResource(rows, NOW, ZONE) as? Serialized.Written ?: error("held: $rows")
 
     private fun ResourceRows.withTitle(title: String): ResourceRows =
         copy(master = master.copy(values = master.values.copy(title = title)))

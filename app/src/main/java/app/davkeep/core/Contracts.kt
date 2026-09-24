@@ -392,6 +392,16 @@ interface ProviderMapper {
      * answer. Returns the rows removed.
      */
     fun deleteResource(account: Account, collection: DavCollection, key: String): Int
+
+    /**
+     * Clears `DIRTY` for a change whose body says nothing the server does not already hold, under
+     * the same guard [markUploaded] uses.
+     *
+     * Nothing else is written: no identity, no ETag and no stored source, because none of them
+     * moved. Returns false when the row moved since [change] was read — a real edit made while step
+     * U was deciding is newer than this answer, so it stays pending and the next run sends it.
+     */
+    fun acknowledgeUnchanged(account: Account, collection: DavCollection, change: LocalChange): Boolean
 }
 
 enum class ChangeKind { CREATE, UPDATE, DELETE }
@@ -409,5 +419,13 @@ data class LocalChange(
     val version: Long? = null,
 )
 
-/** The bytes of one resource, and the UID they carry — already persisted on the row. */
-data class UploadBody(val text: String, val uid: String)
+/**
+ * The bytes of one resource, and the UID they carry — already persisted on the row.
+ *
+ * [unchanged] says the rows produced a resource the server already holds: every property came out
+ * the way the stored source spelled it, and the only differences are this app's own bookkeeping —
+ * the `PRODID` naming the last writer and, for a contact, the `REV` stamped at serialisation. A
+ * dirty flag can be set by a write that reaches no property of the resource, so such a body is one
+ * step U has nothing to tell the server with.
+ */
+data class UploadBody(val text: String, val uid: String, val unchanged: Boolean = false)

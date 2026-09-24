@@ -6,6 +6,7 @@ import android.provider.ContactsContract.CommonDataKinds.StructuredName
 import android.provider.ContactsContract.Data
 import java.time.Instant
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -206,6 +207,29 @@ class VCardPatchTest {
         // Not a card built from the rows: the source is what holds everything the rows cannot, and an
         // upload of the rows alone would delete every property this app does not map.
         assertNull(patchContact("not a vCard", emptyList(), PhotoEdit.Kept, CategoryEdit(emptyList(), emptySet()), MINTED, now))
+    }
+
+    @Test
+    fun `rows that still say what the source says produce nothing new to send`() {
+        // A star, a ringtone or "send to voicemail" flags the contact dirty without touching a Data
+        // row, so step U arrives here with the rows the server's own card produced. The bytes would
+        // differ from the server's copy in this app's PRODID and REV alone, and a PUT of them tells
+        // the server nothing: the flag says so, and step U skips the request.
+        val source = card("FN:Jane Doe", "N:Doe;Jane;;;", "TEL;TYPE=WORK:+1 555 0100", "GEO:1.5,2.5")
+
+        assertTrue(patch(source, rowsOf(source)).unchanged)
+    }
+
+    @Test
+    fun `an edited row is something new to send`() {
+        val source = card("FN:Jane Doe", "N:Doe;Jane;;;", "TEL;TYPE=WORK:+1 555 0100")
+        val rows = rowsOf(source).map { row ->
+            if (row.handle == "TEL:0") row.copy(Phone.NUMBER, "+1 555 0199") else row
+        }
+
+        assertFalse(patch(source, rows).unchanged)
+        // A contact the phone made has no source to be unchanged against: it is sent whatever it says.
+        assertFalse(patch(null, rowsOf(source)).unchanged)
     }
 
     // ------------------------------------------------------------------ fixtures

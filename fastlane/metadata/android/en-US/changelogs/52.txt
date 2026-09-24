@@ -1,0 +1,10 @@
+Fixes found by an independent review of the write-back path.
+
+* a conflict on a recurring event could send the phone's rejected edit to the
+  server without a version check, overwriting the server's copy
+* an edit refused by a read-only Collection could stay on the phone looking
+  synced, on servers that report changes incrementally
+* switching two Collections quickly, or while "Check collections" ran, could
+  undo one of the switches
+* the Collection screen closed at once after a device restore
+* photo baselines are adopted in batches, so large address books finish

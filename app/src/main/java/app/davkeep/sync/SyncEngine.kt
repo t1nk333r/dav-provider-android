@@ -297,26 +297,33 @@ class SyncEngine(
             // for those hrefs costs one REPORT per fifty resources and is owed by the revert
             // itself; a run with nothing reverted asks for nothing.
             //
-            // Held rows are dirty and so are never in this set; the subtraction is belt and braces
-            // against a mapper whose rows moved between step U and this read.
+            // Held rows are dirty and so are never in the clean half of the plan; the subtraction is
+            // belt and braces against a mapper whose rows moved between step U and this read.
+            //
+            // The plan's other half is not subtracted from: those rows are dirty because the user's
+            // edit is on them, and step U held every one of them for want of a base to patch. That
+            // edit can never be sent, and the rows were never written from the server's text, so
+            // the server's copy replaces them and the run reports a conflict — the same answer a
+            // `412` gets, arrived at without one.
             //
             // When step U has already ended the Collection on an error, the restore is still tried —
             // the rows were given back either way — but its own failure must not replace the error the
             // run actually met: a step-U credential failure reported as a transport failure on the
             // REPORT would send the user after the wrong problem.
-            val owed = mapper.revertedItems(account, collection) - uploads.held
+            val plan = mapper.restorePlan(account, collection)
+            val owed = plan.full - uploads.held
             val failure = uploads.error
             val restore = if (failure == null) {
-                restoreReverted(account, collection, session, owed)
+                restoreReverted(account, collection, session, owed, plan.conflicted)
             } else {
                 try {
-                    restoreReverted(account, collection, session, owed)
+                    restoreReverted(account, collection, session, owed, plan.conflicted)
                 } catch (e: AccountVanishedException) {
                     throw e
                 } catch (e: Exception) {
                     // Not reported on its own: the run already reports step U's error, and every
                     // resource this failed to fetch is counted as missing in the outcome below.
-                    Restore(written = 0, deleted = 0, unanswered = owed)
+                    Restore(unanswered = owed + plan.conflicted)
                 }
             }
 
@@ -327,6 +334,8 @@ class SyncEngine(
                 return uploads.outcome(collection).copy(
                     written = restore.written,
                     deleted = restore.deleted,
+                    pending = pendingAfter(uploads, restore),
+                    conflicts = uploads.conflicts + restore.conflicts,
                     missing = restore.unanswered.size,
                 )
             }
@@ -340,6 +349,8 @@ class SyncEngine(
                 return uploads.outcome(collection).copy(
                     written = restore.written,
                     deleted = restore.deleted,
+                    pending = pendingAfter(uploads, restore),
+                    conflicts = uploads.conflicts + restore.conflicts,
                     missing = restore.unanswered.size,
                 )
             }
@@ -406,6 +417,8 @@ class SyncEngine(
             return uploads.outcome(collection).copy(
                 written = restore.written,
                 deleted = restore.deleted,
+                pending = pendingAfter(uploads, restore),
+                conflicts = uploads.conflicts + restore.conflicts,
                 missing = restore.unanswered.size,
                 unchanged = true,
             )
@@ -538,14 +551,25 @@ class SyncEngine(
             written = written,
             deleted = deleted,
             uploaded = uploads.uploaded,
-            pending = uploads.pending,
+            pending = pendingAfter(uploads, restore),
             refused = uploads.refused,
-            conflicts = uploads.conflicts,
+            conflicts = uploads.conflicts + restore.conflicts,
             missing = missing + stranded,
             truncated = members.truncated,
             relisted = relisted,
         )
     }
+
+    /**
+     * What is still on the phone after the restore, which is not always what step U counted.
+     *
+     * A resource whose edit could not be serialised was counted pending and held, and the restore
+     * may then have resolved it — the server's copy on the rows, the edit given up, the conflict
+     * reported. Counting it pending as well would tell the user the edit is waiting for the next
+     * run, which is the one thing it is not.
+     */
+    private fun pendingAfter(uploads: Uploads, restore: Restore): Int =
+        uploads.pending - restore.conflicts.count { it in uploads.held }
 
     /**
      * The server's copy of every resource a revert left waiting, fetched by href in the same run.
@@ -563,55 +587,97 @@ class SyncEngine(
      * fetch the next run makes again, which is the whole difference between reporting the
      * divergence and repairing it.
      *
+     * [conflicted] is the same debt on rows that have been edited since, and is what keeps a revert
+     * from stranding an edit for good ([#35](https://github.com/t1nk333r/davkeep/issues/35)). A
+     * create the server answered `412` is reverted under the name it was `PUT` to, and that name
+     * arrives with no text behind it; until the restore brings one there is nothing for an edit to
+     * be patched onto, so the row's own upload is held on every run — and the row, being dirty, has
+     * dropped out of [keys] and is asked about by nothing.
+     *
+     * It is asked about here, and resolved as a conflict: the server's copy replaces the rows and
+     * the run reports it, exactly as a `412` would be reported. Keeping the edit was tried and is
+     * wrong — those rows were never written from the server's text, so a body patched out of them
+     * would carry every column the server had changed meanwhile back to what the phone happens to
+     * hold, under an ETag this phone got by fetching, with no `412` to stop it and nothing said.
+     * Proving the fetched text is this phone's own lost create would need the sent bytes kept on
+     * the row and compared, which is new state for a comparison any normalising server makes
+     * meaningless; and the edit this gives up is one that could never have been sent at all.
+     *
      * The ETag stored is the one the multiget's own response named, because there is no listing here
      * to read one from and a row whose text has no ETag is fetched again by the next listing that
      * names it. A server that names none in a multiget is asked once, per resource, with the same
      * `PROPFIND Depth: 0` an ETag-less `PUT` answer uses.
      *
-     * A `404` for an href is the server deciding, by name, that it no longer has the resource: the
-     * rows go. Anything else — a response that did not arrive, a batch that failed — leaves the rows
-     * as the revert left them, is counted in [Restore.unanswered] so the run does not report as
-     * done, and is asked for again next run.
+     * A `404` for an href is the server deciding, by name, that it no longer has the resource:
+     * [ProviderMapper.resourceGone] removes its clean rows, and rows holding an edit give the name
+     * back and are a create again — an `If-Match` against a resource the server does not have can
+     * only fail, and a text-less row cannot even be serialised to try. Anything else — a response
+     * that did not arrive, a batch that failed — leaves the rows as they were, is counted in
+     * [Restore.unanswered] so the run does not report as done, and is asked for again next run.
      */
     private suspend fun restoreReverted(
         account: Account,
         collection: DavCollection,
         session: CollectionSession,
         keys: Set<String>,
+        conflicted: Set<String>,
     ): Restore {
-        if (keys.isEmpty()) return Restore(written = 0, deleted = 0, unanswered = emptySet())
+        val wanted = LinkedHashSet<String>(keys.size + conflicted.size)
+        wanted += keys
+        wanted += conflicted
+        if (wanted.isEmpty()) return Restore()
 
         var written = 0
         var deleted = 0
-        val answered = HashSet<String>(keys.size)
-        for (batch in keys.chunked(MULTIGET_BATCH_SIZE)) {
+        val conflicts = ArrayList<String>()
+        val answered = HashSet<String>(wanted.size)
+        for (batch in wanted.chunked(MULTIGET_BATCH_SIZE)) {
             ensureAccountRegistered(account)
 
             val fetched = session.multiget(batch.map { session.memberUrl(it) })
-            if (fetched.bodies.isNotEmpty()) {
-                val etags = fetched.bodies.mapValues { (key, body) -> body.etag ?: session.etagOf(key) }
-                written += mapper.upsert(account, collection, fetched.bodies.mapValues { it.value.text }, etags)
-                answered += fetched.bodies.keys
+            // The two halves travel in one request and part here, where what the write means
+            // differs: replacing rows nobody has touched gives nothing up, and replacing rows that
+            // hold an edit gives that edit up and has to be reported.
+            val whole = fetched.bodies.filterKeys { it in keys }
+            if (whole.isNotEmpty()) {
+                val etags = whole.mapValues { (key, body) -> body.etag ?: session.etagOf(key) }
+                written += mapper.upsert(account, collection, whole.mapValues { it.value.text }, etags)
             }
+            for ((key, body) in fetched.bodies) {
+                if (key !in conflicted) continue
+                val replaced = mapper.replaceOverEdit(
+                    account, collection, key, body.text, body.etag ?: session.etagOf(key),
+                )
+                // One resource at a time, so that what is reported as resolved is what was written:
+                // a resource whose rows moved under the call keeps them and is met again next run.
+                if (replaced) conflicts += key
+            }
+            answered += fetched.bodies.keys
             for (key in fetched.gone) {
                 // The server has decided: it no longer has the resource, by name. Counting it
                 // missing instead would never converge, because nothing will ever name it again.
-                deleted += mapper.deleteResource(account, collection, key)
+                deleted += mapper.resourceGone(account, collection, key)
                 answered += key
             }
         }
         return Restore(
             written = written,
             deleted = deleted,
-            unanswered = keys.filterTo(HashSet()) { it !in answered },
+            conflicts = conflicts,
+            unanswered = wanted.filterTo(HashSet()) { it !in answered },
         )
     }
 
     /**
-     * What [restoreReverted] wrote and removed, and which of the resources it asked for it did not
-     * get an answer about.
+     * What [restoreReverted] wrote, removed and resolved, and which of the resources it asked for
+     * it did not get an answer about.
      */
-    private data class Restore(val written: Int, val deleted: Int, val unanswered: Set<String>)
+    private data class Restore(
+        val written: Int = 0,
+        val deleted: Int = 0,
+        val conflicts: List<String> = emptyList(),
+        val unanswered: Set<String> = emptySet(),
+    )
 
     /**
      * §6 step U: every row the phone has changed, sent before anything of the server's is read.

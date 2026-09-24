@@ -35,6 +35,7 @@ import app.davkeep.core.CollectionState
 import app.davkeep.core.DavCollection
 import app.davkeep.core.LocalChange
 import app.davkeep.core.ProviderMapper
+import app.davkeep.core.RestorePlan
 import app.davkeep.core.UploadBody
 
 /**
@@ -669,8 +670,14 @@ class ContactsMapper(
      * `revertLocalChange` clears `DIRTY` and `DELETED` and nulls `SYNC2`, and nothing else leaves a
      * clean keyed row without an ETag except a server that named none for it. Groups are never
      * reverted, so they are not read here.
+     *
+     * Nothing is ever owed a source alone. A contact's upload patches the vCard this app stored
+     * beside it where there is one and is written from the `Data` rows where there is not, so a
+     * contact with no stored vCard still has a body to send and never waits for one
+     * ([#35](https://github.com/t1nk333r/davkeep/issues/35) is the calendar's shape, where a keyed
+     * resource with no stored text can be serialised no other way).
      */
-    override fun revertedItems(account: Account, collection: DavCollection): Set<String> {
+    override fun restorePlan(account: Account, collection: DavCollection): RestorePlan {
         val keys = LinkedHashSet<String>()
         resolver.query(
             RawContacts.CONTENT_URI.forSyncAdapter(account),
@@ -681,15 +688,34 @@ class ContactsMapper(
         )?.use { cursor ->
             while (cursor.moveToNext()) cursor.getString(0)?.let { keys += it }
         }
-        return keys
+        return RestorePlan(full = keys)
     }
 
     /**
-     * Removes the contact the server answered `404` for by name — the shape [deleteMissing] uses
-     * for a clean stale contact, narrowed to the one key. A dirty row is an edit made since the
-     * server answered and is left for step U of the next run.
+     * Never reached: [restorePlan] names no contact conflicted, and the engine writes over an edit
+     * only for a key the plan named. A contact whose vCard this app never stored still serialises
+     * from its `Data` rows, so there is no edit here that cannot be sent — and discarding one that
+     * can be sent is the lost update this whole class is written around.
      */
-    override fun deleteResource(account: Account, collection: DavCollection, key: String): Int {
+    override fun replaceOverEdit(
+        account: Account,
+        collection: DavCollection,
+        key: String,
+        text: String,
+        etag: String?,
+    ): Boolean = false
+
+    /**
+     * The contact the server answered `404` for by name — the shape [deleteMissing] uses for a
+     * clean stale contact, narrowed to the one key.
+     *
+     * A dirty row is an edit made since the server answered, so it is not deleted; but it stops
+     * claiming a name the server no longer has, because an `If-Match` against that name can only
+     * fail. Without its `SOURCE_ID` the contact is what it now is — one this phone has and the
+     * server does not — and step U sends it as a create. A tombstone keeps its name: the `DELETE`
+     * it still owes is addressed by it.
+     */
+    override fun resourceGone(account: Account, collection: DavCollection, key: String): Int {
         assertAccountRegistered(account)
         val deleted = resolver.delete(
             RawContacts.CONTENT_URI.forSyncAdapter(account),
@@ -698,6 +724,18 @@ class ContactsMapper(
         )
         if (deleted > 0) {
             Log.i(LOG_TAG, "${collection.id}: $key is no longer on the server; its rows are removed")
+        }
+        val unnamed = resolver.update(
+            RawContacts.CONTENT_URI.forSyncAdapter(account),
+            ContentValues().apply {
+                putNull(RawContacts.SOURCE_ID)
+                putNull(RawContacts.SYNC2)
+            },
+            "${contactSelection()} AND ${RawContacts.SOURCE_ID}=? AND ${RawContacts.DIRTY}=1",
+            collectionArgs(account, collection) + key,
+        )
+        if (unnamed > 0) {
+            Log.i(LOG_TAG, "${collection.id}: $key is no longer on the server; the edit on it is a create again")
         }
         return deleted
     }

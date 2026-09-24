@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 import app.davkeep.core.ChangeKind
 import app.davkeep.core.LocalChange
+import app.davkeep.core.RestorePlan
 
 /**
  * Which rows are queued for upload, and which a completed listing may delete.
@@ -198,6 +199,51 @@ class CalendarUploadTest {
         )
 
         assertEquals(emptySet<String>(), owed)
+    }
+
+    /**
+     * #35: a create the server answered `412` is reverted under the name it was `PUT` to, and that
+     * name arrives with no ETag and no stored text. Edit it and the clean-rows-only set drops it —
+     * so it is named here instead, as a conflict: nothing can ever be sent for it, and the rows
+     * were never written from the server's text, so only the server's copy can resolve it. A plan
+     * that left it out is the stall the ticket is about.
+     */
+    @Test
+    fun `an edited row with no stored text is a conflict`() {
+        val plan = restorePlanOf(listOf(row(84, syncId = NAME, dirty = true, uid = "minted"))) { setOf(NAME) }
+
+        assertEquals(emptySet<String>(), plan.full)
+        assertEquals(setOf(NAME), plan.conflicted)
+    }
+
+    /** A row nobody has touched since the revert gives nothing up, so it is not a conflict. */
+    @Test
+    fun `a clean row a revert left takes the whole resource`() {
+        val plan = restorePlanOf(listOf(row(40, syncId = NAME))) { setOf(NAME) }
+
+        assertEquals(setOf(NAME), plan.full)
+        assertEquals(emptySet<String>(), plan.conflicted)
+    }
+
+    /**
+     * A resource with a stored text is owed nothing, and a run whose queue names none is not even
+     * asked which resources have one: nothing pending must cost no query and no request.
+     */
+    @Test
+    fun `a run with nothing to send asks nothing about stored text`() {
+        var asked = 0
+        val plan = restorePlanOf(listOf(row(40, syncId = NAME, etag = "W/\"7\""))) { asked++; setOf(NAME) }
+
+        assertEquals(RestorePlan(), plan)
+        assertEquals(0, asked)
+    }
+
+    /** An edit whose resource does have a stored text patches onto it; the restore owes it nothing. */
+    @Test
+    fun `an edited row with a stored text is owed nothing`() {
+        val plan = restorePlanOf(listOf(row(84, syncId = NAME, dirty = true, etag = "W/\"7\""))) { emptySet() }
+
+        assertEquals(RestorePlan(), plan)
     }
 
     private fun row(

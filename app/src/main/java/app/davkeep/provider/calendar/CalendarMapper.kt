@@ -22,6 +22,7 @@ import app.davkeep.core.CollectionState
 import app.davkeep.core.DavCollection
 import app.davkeep.core.LocalChange
 import app.davkeep.core.ProviderMapper
+import app.davkeep.core.RestorePlan
 import app.davkeep.core.UploadBody
 import java.time.ZoneId
 import java.util.UUID
@@ -155,12 +156,11 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
      * both write a `_SYNC_ID` together with the source, and did so already in 0.6.0, the first build
      * of this application id, so no upgrade leaves such a row. One path does: a create the server
      * answered `412` is reverted under the name it was PUT to, and that name arrives with no text.
-     * The restore that follows every revert fetches it and writes the text; only if that restore
-     * keeps failing, and the user edits the event meanwhile, does the row stay named, text-less and
-     * dirty — and then its edit is held out of every upload for want of a base to patch, #35. It is
-     * also only as good as the listing: a `sync-collection` delta names what changed, not what this
-     * phone lacks. A resource that was *too large* to keep is not in the set at all: it keeps its
-     * ETag, because refetching it every run would never make it patchable.
+     * That row is the restore's, not this listing's — [restorePlan] names it whether it is clean or
+     * holds an edit made since, and asks for it by href on every run — because this set is only as
+     * good as the listing it is diffed against, and a `sync-collection` delta names what changed,
+     * not what this phone lacks. A resource that was *too large* to keep is not in the set at all:
+     * it keeps its ETag, because refetching it every run would never make it patchable.
      */
     override fun localItems(account: Account, collection: DavCollection): Map<String, String?> {
         val calendarId = findCalendarId(account, collection) ?: return emptyMap()
@@ -349,47 +349,222 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
     }
 
     /**
-     * The resources a revert left behind: clean rows carrying a name and no ETag.
+     * What the restore is owed, from one reading of the Collection's rows.
      *
      * Read from the rows rather than carried from step U, because a revert an earlier run made and
      * could not repair looks exactly the same as one this run made, and a `sync-collection` delta
-     * will never name a resource the server itself did not touch.
+     * will never name a resource the server itself did not touch. The rule itself is
+     * [restorePlanOf]'s; this is the reading of the provider it needs.
      */
-    override fun revertedItems(account: Account, collection: DavCollection): Set<String> {
-        val calendarId = findCalendarId(account, collection) ?: return emptySet()
-        return revertedPlan(queueRows(account, calendarId))
+    override fun restorePlan(account: Account, collection: DavCollection): RestorePlan {
+        val calendarId = findCalendarId(account, collection) ?: return RestorePlan()
+        val rows = queueRows(account, calendarId)
+        return restorePlanOf(rows) { names -> textless(account, calendarId, names) }
     }
 
     /**
-     * Removes the rows of a resource the server answered `404` for by name.
+     * Which of [names] have no stored copy of the server's text.
      *
-     * The three identities are the ones [resourceSelection] matches, and they are all needed here:
-     * `deleteEventInternal` cascades a master's exceptions only for a master without a `_SYNC_ID`,
-     * which is never the shape this reaches. A dirty or deleted row is an edit newer than the
-     * server's answer and is left for step U of the next run.
+     * Asked of the column's nullness and never of the column itself, for [localItems]'s reason: a
+     * projection carrying every candidate's text would drag the resources through a CursorWindow.
+     * A resource held back for its size keeps its marker and is not named here — refetching it
+     * every run would never make it patchable — and the names are matched in memory, because the
+     * rows with no text at all are few and an `IN` list is bounded by the host-parameter limit.
      */
-    override fun deleteResource(account: Account, collection: DavCollection, key: String): Int {
+    private fun textless(account: Account, calendarId: Long, names: Set<String>): Set<String> {
+        val found = LinkedHashSet<String>()
+        val selection = "${Events.CALENDAR_ID}=? AND ${Events._SYNC_ID} IS NOT NULL " +
+            "AND ${Events.SYNC_DATA2} IS NULL AND (${Events.SYNC_DATA3} IS NULL OR ${Events.SYNC_DATA3}<>?)"
+        resolver.query(
+            eventsUri(account),
+            arrayOf(Events._SYNC_ID),
+            selection,
+            arrayOf(calendarId.toString(), SOURCE_OVERSIZE),
+            null,
+        )?.use { cursor ->
+            while (cursor.moveToNext()) {
+                val name = cursor.getString(0) ?: continue
+                if (name in names) found += name
+            }
+        }
+        return found
+    }
+
+    /**
+     * Writes the server's copy over the rows of a resource whose edit can never be sent.
+     *
+     * The same write the fetch makes for any other resource — [ResourceWriter] over the rows the
+     * name claims, source, ETag and override count included, `DIRTY` cleared — with the one check
+     * that normally stops it removed for this key alone. That check exists because writing over a
+     * dirty row discards an edit nobody answered for; here the edit is one no `PUT` can ever
+     * carry, because the rows hold no copy of the server's text to patch it onto, and every run
+     * would otherwise fetch nothing, send nothing and count it pending for good
+     * ([#35](https://github.com/t1nk333r/davkeep/issues/35)).
+     *
+     * What it must never become is a quiet merge. The rows of such a resource were never written
+     * from the server's text — they are a create the server answered `412` and whatever the user
+     * has typed since — so a body built by patching them onto [text] would overwrite, under an
+     * ETag this phone obtained by fetching, every server-side change the rows were never told
+     * about, with no `412` to stop it and nothing reported. So the server's copy is written whole
+     * and the run reports a conflict, which is what this design does with every other conflict.
+     *
+     * A tombstone is still refused: `DELETE` is a change the server has answered for, and it goes
+     * out next run.
+     */
+    override fun replaceOverEdit(
+        account: Account,
+        collection: DavCollection,
+        key: String,
+        text: String,
+        etag: String?,
+    ): Boolean {
+        assertAccountRegistered(account)
+        val calendarId = ensureCalendar(account, collection)
+        val claiming = rowsClaiming(account, calendarId, listOf(key), givenUp = setOf(key))
+        if (key in claiming.blocked) {
+            Log.i(TAG, "$key: a row of it is a tombstone; the server's copy is not written over it")
+            return false
+        }
+        val resource = try {
+            parseResource(text)
+        } catch (e: Exception) {
+            Log.w(TAG, "Not writing the server's copy of $key: it is not usable as iCalendar", e)
+            return false
+        }
+        val ops = ArrayList<ContentProviderOperation>()
+        val rows = ResourceWriter(
+            account, calendarId, key, text, resource, etag, claiming.rows[key].orEmpty(),
+            overEdit = true,
+        ).write(ops)
+        if (ops.isEmpty()) return false
+        try {
+            resolver.applyBatch(authority, ops)
+        } catch (e: OperationApplicationException) {
+            // A row of the resource went away under the batch — the provider rolls the whole thing
+            // back, so the rows are as they were and the next run meets the resource as it is then.
+            Log.i(TAG, "$key: a row moved while the server's copy was being written; nothing was written")
+            return false
+        }
+        Log.i(TAG, "$key: the server's copy replaced $rows row(s) holding an edit that had no base to be sent from")
+        return rows > 0
+    }
+
+    /**
+     * What a resource the server answered `404` for by name leaves behind.
+     *
+     * One question first, over every row the name claims: does any of them hold a change no run has
+     * sent? The three identities are the ones [resourceSelection] matches, and they are all needed,
+     * because an override names its master by `ORIGINAL_SYNC_ID` or by `ORIGINAL_ID` and either may
+     * be the only link it has.
+     *
+     * No unsent change: the rows are the server's, the server does not have them any more, and they
+     * go.
+     *
+     * An unsent change anywhere in the resource: nothing is deleted and the whole resource gives
+     * the name and the ETag back. Deleting the clean rows and keeping the dirty one would take the
+     * user's exceptions off an event that is about to be sent again — a master alone is a
+     * recurrence with every override silently dropped — and keeping the name would leave a row
+     * asking for a resource that will never answer: an `If-Match` against it can only fail, a row
+     * with no stored text cannot be serialised to try, and every restore would ask again and be
+     * answered `404` again ([#35](https://github.com/t1nk333r/davkeep/issues/35)).
+     *
+     * Every row of it is marked `DIRTY` in the same write, and that is not bookkeeping: an unnamed
+     * row that is *clean* is a row [doomedRows] deletes on the first listing that completes — it
+     * claims no href, so no listing can name it — and deleting a master with no `_SYNC_ID` takes
+     * its exceptions with it, which is the user's edit gone in the same run that saved it. Dirty,
+     * the rows are what they now are: an event this phone has and the server does not, skipped by
+     * every deletion sweep and queued by [pendingPlan] as the create it has become, under the UID
+     * the name was made from.
+     *
+     * The overrides are relinked by `ORIGINAL_ID` in the same breath, because `ORIGINAL_SYNC_ID`
+     * named a master that no longer carries that name, and an override that claims nothing is an
+     * event of its own. A master that is a tombstone keeps everything, name included: the `DELETE`
+     * it still has to send is addressed by it.
+     */
+    override fun resourceGone(account: Account, collection: DavCollection, key: String): Int {
         assertAccountRegistered(account)
         val calendarId = findCalendarId(account, collection) ?: return 0
         val masters = ArrayList<Long>()
+        var tombstone = false
         resolver.query(
             eventsUri(account),
-            arrayOf(Events._ID),
+            arrayOf(Events._ID, Events.DELETED),
             "${Events.CALENDAR_ID}=? AND ${Events._SYNC_ID}=?",
             arrayOf(calendarId.toString(), key),
             null,
         )?.use { cursor ->
-            while (cursor.moveToNext()) masters += cursor.getLong(0)
+            while (cursor.moveToNext()) {
+                if (cursor.getInt(1) != 0) tombstone = true else masters += cursor.getLong(0)
+            }
         }
+        if (tombstone) return 0
         val ids = masters.joinToString(",")
-        val selection = "${Events.CALENDAR_ID}=? AND (${Events.ORIGINAL_SYNC_ID}=?" +
+        val claims = "${Events.CALENDAR_ID}=? AND (${Events.ORIGINAL_SYNC_ID}=?" +
             (if (masters.isEmpty()) "" else " OR ${Events._ID} IN ($ids) OR ${Events.ORIGINAL_ID} IN ($ids)") +
-            ") AND ${Events.DIRTY}=0 AND ${Events.DELETED}=0"
-        val deleted = resolver.delete(eventsUri(account), selection, arrayOf(calendarId.toString(), key))
-        if (deleted > 0) {
-            Log.i(TAG, "$key: the server no longer has it; its rows are removed")
+            ")"
+        val args = arrayOf(calendarId.toString(), key)
+        var holdsEdit = false
+        resolver.query(
+            eventsUri(account),
+            arrayOf(Events._ID),
+            "$claims AND (${Events.DIRTY}<>0 OR ${Events.DELETED}=1)",
+            args,
+            null,
+        )?.use { cursor -> holdsEdit = cursor.count > 0 }
+
+        if (!holdsEdit) {
+            val deleted = resolver.delete(eventsUri(account), "$claims AND ${Events.DELETED}=0", args)
+            if (deleted > 0) {
+                Log.i(TAG, "$key: the server no longer has it; its rows are removed")
+            }
+            return deleted
         }
-        return deleted
+
+        if (masters.isEmpty()) {
+            // Overrides of a master this calendar does not hold: there is no name on them to give
+            // back and nothing to create them under. They are left for the listing to decide.
+            Log.i(TAG, "$key: the server no longer has it, and this calendar holds no master row for it")
+            return 0
+        }
+        resolver.update(
+            eventsUri(account),
+            ContentValues().apply {
+                putNull(Events._SYNC_ID)
+                putNull(Events.SYNC_DATA1)
+                putNull(Events.SYNC_DATA4)
+                put(Events.DIRTY, 1)
+            },
+            "${Events.CALENDAR_ID}=? AND ${Events._SYNC_ID}=? AND ${Events.DELETED}=0",
+            args,
+        )
+        // An override that already links by ORIGINAL_ID keeps that link and only gives the name
+        // back; one that has nothing but the name is pointed at the row `rowPlan` would have
+        // called the master — the lowest id, so a duplicated name resolves the same way here as it
+        // does there — because an override claiming nothing is an event of its own.
+        val overrides = "$claims AND ${Events._ID} NOT IN ($ids) AND ${Events.DELETED}=0"
+        resolver.update(
+            eventsUri(account),
+            ContentValues().apply {
+                putNull(Events.ORIGINAL_SYNC_ID)
+                putNull(Events.SYNC_DATA1)
+                put(Events.ORIGINAL_ID, masters.min())
+                put(Events.DIRTY, 1)
+            },
+            "$overrides AND ${Events.ORIGINAL_ID} IS NULL",
+            args,
+        )
+        resolver.update(
+            eventsUri(account),
+            ContentValues().apply {
+                putNull(Events.ORIGINAL_SYNC_ID)
+                putNull(Events.SYNC_DATA1)
+                put(Events.DIRTY, 1)
+            },
+            "$overrides AND ${Events.ORIGINAL_ID} IS NOT NULL",
+            args,
+        )
+        Log.i(TAG, "$key: the server no longer has it; the edit on its rows is a create again")
+        return 0
     }
 
     /** Every row of one calendar, as the queue and the restore both read it. */
@@ -923,7 +1098,18 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
      */
     private class Claimed(val rows: Map<String, List<ExistingRow>>, val blocked: Set<String>)
 
-    private fun rowsClaiming(account: Account, calendarId: Long, names: Collection<String>): Claimed {
+    private fun rowsClaiming(
+        account: Account,
+        calendarId: Long,
+        names: Collection<String>,
+        /**
+         * Names whose local edit the caller has given up: a dirty row of theirs no longer blocks
+         * the write. Only [replaceOverEdit] passes any, and only for a resource whose edit can
+         * never be sent. A tombstone blocks whatever this says — it is a change the server has
+         * answered for.
+         */
+        givenUp: Set<String> = emptySet(),
+    ): Claimed {
         if (names.isEmpty()) return Claimed(emptyMap(), emptySet())
         val placeholders = names.joinToString(",") { "?" }
         val selection = "${Events.CALENDAR_ID}=? AND (${Events._SYNC_ID} IN ($placeholders) " +
@@ -958,8 +1144,8 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
                 )
                 rows += row
                 if (!row.dirty && !row.deleted) continue
-                row.syncId?.takeIf { it in names }?.let(blocked::add)
-                row.originalSyncId?.takeIf { it in names }?.let(blocked::add)
+                row.syncId?.takeIf { it in names && (row.deleted || it !in givenUp) }?.let(blocked::add)
+                row.originalSyncId?.takeIf { it in names && (row.deleted || it !in givenUp) }?.let(blocked::add)
             }
         }
         return Claimed(rowsByClaim(rows.filterNot { it.deleted }, names), blocked)
@@ -1018,6 +1204,13 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
         private val etag: String?,
         /** The rows claiming this resource, read once for the whole batch by [rowsClaiming]. */
         private val existing: List<ExistingRow>,
+        /**
+         * Whether the edit these rows hold has been given up, which only [replaceOverEdit] says.
+         * It is what lifts the `DIRTY=0` guard below: that guard is the second line stopping the
+         * server's copy from landing on an unsent edit, and this path is the one place where that
+         * is the decided answer rather than an accident.
+         */
+        private val overEdit: Boolean = false,
     ) {
         private val nowMillis = System.currentTimeMillis()
         private val fallbackZone: ZoneId = ZoneId.systemDefault()
@@ -1104,7 +1297,7 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
             // Anything else claiming this resource — a duplicated master, an exception the server
             // has since dropped — is gone. `_SYNC_ID` has no unique index, so this is the only
             // thing keeping the resource name unique per calendar.
-            appendDeletes(batch, account, plan.doomed)
+            appendDeletes(batch, account, plan.doomed, dirtyToo = overEdit)
             return written
         }
 
@@ -1239,11 +1432,17 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
          * since holds an edit no run has sent, and writing the server's copy over it is the lost
          * update the flag exists to prevent. The expected count makes the provider refuse the whole
          * batch rather than that one row, which [upsert] answers by building it again.
+         *
+         * [overEdit] is the one caller that has decided otherwise, for a resource whose edit can
+         * never be sent at all, and the guard would refuse every row it is about. What it keeps is
+         * `DELETED=0` and the count: a tombstone is a change the server has answered for, and a row
+         * that disappeared under the batch still rolls the whole write back.
          */
         private fun eventUpdate(id: Long, values: ContentValues): ContentProviderOperation =
             ContentProviderOperation.newUpdate(eventsUri(account))
                 .withSelection(
-                    "${Events._ID}=? AND ${Events.DIRTY}=0 AND ${Events.DELETED}=0",
+                    "${Events._ID}=?" + (if (overEdit) "" else " AND ${Events.DIRTY}=0") +
+                        " AND ${Events.DELETED}=0",
                     arrayOf(id.toString()),
                 )
                 .withValues(values)
@@ -1310,14 +1509,24 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
      * Dirty and deleted rows are left where they are, with no expected count: a row that became one
      * or the other since the batch was planned is an edit or a deletion this app has not sent, and
      * keeping it costs a duplicate until the next run uploads it, while deleting it costs the edit.
+     *
+     * [dirtyToo] is [replaceOverEdit]'s: that resource's edit is given up whole, and a row the
+     * server's copy does not claim — an occurrence the user added to an event they cannot send — is
+     * part of it. A tombstone is still left alone, being a change the server has answered for.
      */
-    private fun appendDeletes(batch: MutableList<ContentProviderOperation>, account: Account, ids: List<Long>) {
+    private fun appendDeletes(
+        batch: MutableList<ContentProviderOperation>,
+        account: Account,
+        ids: List<Long>,
+        dirtyToo: Boolean = false,
+    ) {
         for (chunk in ids.chunked(ID_CHUNK)) {
             val placeholders = chunk.joinToString(",") { "?" }
             val args = chunk.map { it.toString() }.toTypedArray()
             batch += ContentProviderOperation.newDelete(eventsUri(account))
                 .withSelection(
-                    "${Events._ID} IN ($placeholders) AND ${Events.DIRTY}=0 AND ${Events.DELETED}=0",
+                    "${Events._ID} IN ($placeholders)" + (if (dirtyToo) "" else " AND ${Events.DIRTY}=0") +
+                        " AND ${Events.DELETED}=0",
                     args,
                 )
                 .build()
@@ -1558,6 +1767,32 @@ internal fun revertedPlan(rows: List<QueueRow>): Set<String> {
         row.syncId?.let { owed += it }
     }
     return owed
+}
+
+/**
+ * What one run's restore is owed, split by what the rows under each resource mean.
+ *
+ * The first half is [revertedPlan]'s: rows nobody has touched since the revert, which the server's
+ * copy replaces outright and gives nothing up by replacing. The second is a resource whose rows
+ * hold an edit that can never be sent, and it is asked of the queue rather than of a second set of
+ * rules — a resource [pendingPlan] queues as an update is one this run means to `PUT`, and one
+ * with no stored text is one `serializeResource` can produce no body for at all, a keyed resource
+ * having nothing for a patch to start from. Left alone it is held on every run for good, and
+ * fetched it is a conflict, because the rows say nothing trustworthy about what the server holds:
+ * [#35](https://github.com/t1nk333r/davkeep/issues/35). A create is not asked about, having no name
+ * for anything to be fetched under, and neither is a tombstone, which sends no body.
+ *
+ * [textless] answers which of the names it is given have no stored text, and is asked nothing when
+ * the queue holds no named update: a run with nothing pending must cost no query and no request.
+ */
+internal fun restorePlanOf(rows: List<QueueRow>, textless: (Set<String>) -> Set<String>): RestorePlan {
+    val queued = pendingPlan(rows).mapNotNullTo(LinkedHashSet<String>()) {
+        if (it.kind == ChangeKind.UPDATE) it.key else null
+    }
+    return RestorePlan(
+        full = revertedPlan(rows),
+        conflicted = if (queued.isEmpty()) emptySet() else textless(queued),
+    )
 }
 
 /**

@@ -380,18 +380,53 @@ interface ProviderMapper {
     ): Boolean
 
     /**
-     * Keys of resources whose rows are clean and carry no ETag: what a revert leaves behind. A row
-     * in this state holds text nobody kept and cannot say which version the server has, so the run
-     * fetches it by href before anything else — on every run, until the server answers for it.
+     * What this run owes the server's copy to, read from the rows at the start of every run.
+     *
+     * [RestorePlan.full] is what a revert leaves: rows that are clean and carry no ETag, holding
+     * text nobody kept and unable to say which version the server has. They are fetched by href
+     * before anything else — on every run, until the server answers for them.
+     *
+     * [RestorePlan.conflicted] is a row that has been edited since: named, dirty, and with no
+     * stored copy of the server's text. Its edit cannot be serialised at all — there is no base to
+     * patch it onto — so it can never be sent, and nothing the rows say can be trusted to describe
+     * what the server holds. Those resources are fetched and resolved the way a `412` is resolved:
+     * the server's copy replaces the rows, through [replaceOverEdit], and the run reports a
+     * conflict.
      */
-    fun revertedItems(account: Account, collection: DavCollection): Set<String>
+    fun restorePlan(account: Account, collection: DavCollection): RestorePlan
 
     /**
-     * Removes every clean row of the resource stored under [key], after the server said by name
-     * that it no longer has it. Dirty and deleted rows stay: an edit made since is newer than the
-     * answer. Returns the rows removed.
+     * Writes the server's copy of [key] over rows holding an edit, clearing their flags: the
+     * conflict resolution for a resource whose edit can never be sent.
+     *
+     * This is the one write that discards a local change without an answer from the server about
+     * that change, and it is legitimate for one reason only — the rows were never populated from
+     * the server's text, so the difference between them and [text] is not an edit anyone can
+     * describe, and the resource is [RestorePlan.conflicted]. Called with nothing else.
+     *
+     * Returns whether the rows were replaced; false leaves them exactly as they were, which is
+     * what a resource whose master became a tombstone under this call gets.
      */
-    fun deleteResource(account: Account, collection: DavCollection, key: String): Int
+    fun replaceOverEdit(
+        account: Account,
+        collection: DavCollection,
+        key: String,
+        text: String,
+        etag: String?,
+    ): Boolean
+
+    /**
+     * The server has said, by name, that it no longer has the resource stored under [key].
+     *
+     * Every clean row of it is removed. A row holding an unsent edit is not: that edit is newer
+     * than this answer, and the only place left to send it is a resource of its own, so the rows
+     * give the name and the ETag back instead and are a create again. Leaving them named would
+     * leave them asking for a resource that will never answer, on every run, with the edit held
+     * out of every upload. A tombstone keeps its name, because the `DELETE` it sends needs one.
+     *
+     * Returns the rows removed; rows that gave back a name are not removed and are not counted.
+     */
+    fun resourceGone(account: Account, collection: DavCollection, key: String): Int
 
     /**
      * Clears `DIRTY` for a change whose body says nothing the server does not already hold, under
@@ -403,6 +438,22 @@ interface ProviderMapper {
      */
     fun acknowledgeUnchanged(account: Account, collection: DavCollection, change: LocalChange): Boolean
 }
+
+/**
+ * The resources one run owes the server's copy to, split by what the rows under them mean.
+ *
+ * Both halves are fetched together, by href, before any listing. They part at the write, and the
+ * split is the whole of what separates a repair from a lost update: rows nobody has touched since
+ * the revert are the server's to replace and nothing is given up by replacing them, while rows
+ * holding an edit that can never be sent are a conflict, resolved the way every other conflict is
+ * — the server's version wins and the run says so.
+ */
+data class RestorePlan(
+    /** Named, clean, no ETag: the rows are the phone's rejected text and the server's belongs there. */
+    val full: Set<String> = emptySet(),
+    /** Named, dirty, with no stored text: an edit with no base to be patched onto, and no way out. */
+    val conflicted: Set<String> = emptySet(),
+)
 
 enum class ChangeKind { CREATE, UPDATE, DELETE }
 

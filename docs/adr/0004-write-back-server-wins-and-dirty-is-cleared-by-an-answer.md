@@ -146,6 +146,73 @@ parsed and the body as patched, through one writer, before this app's own `PRODI
 because a source the server wrote spells the same card its own way, and a byte comparison would have
 skipped only the second pointless upload of each pair.
 
+**Amended:** what a revert is owed is owed to a dirty row too. "Clean, named, no ETag" describes the
+row a revert leaves *and nothing that has happened to it since*, and one thing happens often enough
+to matter: the user edits the event. A create the server answered `412` is reverted under the name it
+was `PUT` to, and that name arrives with no stored copy of the server's text; if the restore keeps
+failing — unreachable server, an answer without that href — the text never arrives, and an edit made
+in the meantime makes the row dirty. It then drops out of a clean-rows-only set, so nothing asks for
+it again, and `serializeResource` holds it, because a keyed resource with no stored source has
+nothing for a patch to start from: every run counts the edit pending and no run fetches the base. A
+server that lists in full repairs it at the next listing; a `sync-collection` delta never names a
+resource the server did not touch, so there it is forever. Measured on a device against Radicale,
+which supports `sync-collection`: the run after the edit sent one `REPORT` per Collection and nothing
+else, on every run, with the row named, text-less and dirty throughout.
+
+So the restore asks for those hrefs as well — the ones the queue means to `PUT` and the rows hold no
+text for — and the answer resolves them as a conflict: the server's copy is written over the rows,
+their flags are cleared, and the run reports the resource the way it reports every other conflict.
+It is not also counted pending: step U counted it so when it could not serialise it, and the same
+run has since given that edit up, so saying the next sync will try it again would be the one thing
+that is no longer true.
+
+Giving the edit a base instead, and letting the next step U patch onto it, was implemented first and
+is wrong. The rows of such a resource were never written from the server's text — they are a create
+the server answered `412` and whatever the user has typed since — so the body patched out of them
+states every column-mapped property as the phone happens to hold it, and drops every override
+component no row claims. Where another client changed the event between the lost create and the
+restore that finally succeeded, that difference is not the user's edit at all, and the `PUT` carrying
+it goes out under the ETag the restore just fetched: the server accepts it, and the other client's
+change is gone with no `412` and nothing reported. That is the lost update this decision exists to
+prevent, arrived at through the machinery meant to repair a stall.
+
+Proving the fetched text is this phone's own lost create, unchanged, would make the edit safe to
+keep — and would need the bytes the create sent kept on the row and compared at the restore, which
+is new state for a comparison a normalising server makes meaningless, and would fall back to the
+conflict anyway. What the conflict gives up is an edit that could never have been sent by any path;
+what it buys is that the server's version is what survives, which is what this decision says. Both
+halves travel in one multiget, so a run with nothing owed still asks for nothing.
+
+A `404` for such an href is the other half of the same question. The resource under that name is
+gone, so nothing can be fetched to resolve the conflict and nothing can be `PUT` against it either —
+an `If-Match` can only fail, and a text-less row cannot be serialised to try. Deleting the rows
+would discard an edit no answer was ever given about; leaving them named repeats the multiget and
+the `404` on every run for good. So the rows give the name and the ETag back and are a create again,
+under the UID the name was made from, and step U sends them as what they now are: an event this
+phone has and the server does not.
+
+The question is asked of the resource and not of each row, which is the correction that mattered:
+deleting the clean rows first and un-naming the dirty master afterwards took the user's exceptions
+off an event that was about to be sent again, and a recurrence re-created from its master alone is
+one with every override silently dropped. So a resource with an unsent change anywhere in it keeps
+every row, and its overrides are relinked by `ORIGINAL_ID`, the name they claimed being gone.
+
+Every one of those rows is also marked `DIRTY`, and that mark is load-bearing rather than tidy. A
+row with no name that is clean is a row the deletion sweep of the same run deletes — it claims no
+href, so no listing can name it, which is exactly what "the listing did not mention it" means to
+`doomedRows` — and `CalendarProvider2` hard-deletes a master without a `_SYNC_ID` together with its
+exceptions. The run that rescued the edit would have destroyed it a few steps later, and the queue
+would have found nothing to send next run because there would be nothing left. Marked, the rows are
+what they now are: an event this phone has and the server does not, skipped by every sweep, queued
+by the create rule that has always been there. Setting the flag is not the backstop this decision
+deleted — that one *cleared* flags nobody had answered for — it is this app saying, of rows it has
+just taken the server's name off, that they are owed an upload.
+
+Demonstrated on a device, in the shape that is hardest: a daily event with one exception, its create
+answered `412`, its restore failing, only the *exception* edited — so the master was clean when the
+server deleted the resource. The `404` un-named and marked the two rows, the listing in the same run
+left both alone, and the next run's `PUT` carried both components, the `RECURRENCE-ID` among them.
+
 ## Consequences
 
 - A conflict loses the phone's edit deliberately, and says so: the log names the resource, and the Collection stays `OK`, because nothing is left to retry.

@@ -1,0 +1,2 @@
+A star, a ringtone or another change DAVKeep does not sync no longer sends the
+whole contact or event to the server again.

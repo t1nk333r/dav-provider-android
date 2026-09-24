@@ -26,3 +26,4 @@ local.properties
 
 # Release signing: holds the keystore path and passwords. Never committed.
 keystore.properties
+__pycache__/

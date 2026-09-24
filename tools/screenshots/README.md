@@ -35,6 +35,14 @@ under the old filenames, which is how withdrawn screenshots stayed live after th
 - `adb`, `docker`, `openssl`, and Python with Pillow.
 - An emulator that `adb root` succeeds on: a **Google APIs** system image, not Google Play.
 
+It refuses anything that is not an emulator, before touching it. The run uninstalls the app — with
+every Account on it — and mounts a CA over the system trust store, and `adb root` also succeeds on
+a userdebug phone or one with rooted debugging on.
+
+`--keep` leaves the demo server and its TLS front running so the fixture can be used for device
+checks, and prints how to stop both. The CA's private key is deleted as soon as it has signed the
+server's certificate either way.
+
 ## Proving the guard
 
 A guard that has never fired is not known to work:
@@ -45,6 +53,12 @@ python3 tools/screenshots/capture.py --apk ... --prove-refusal
 
 That configures the Account under a label naming another host and requires the run to fail with no
 image written. It exits 0 when it was refused, non-zero if anything was saved.
+
+The guard counts as a host: the host of anything written as a URL, any IPv4 or IPv6 literal, the
+whole text of the Account label and the first line of each log entry (a label is a host by
+construction, whatever its shape), and any other dotted word not on the short allow-list in the
+script. The single-label names a home or tailnet server usually has — `nas`, `luna` — have no dot,
+and would pass a check that only looked for one.
 
 ## The fixture
 

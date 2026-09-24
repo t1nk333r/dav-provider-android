@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -157,6 +158,10 @@ def make_certificate(work: Path) -> tuple[Path, Path, str]:
     openssl("x509", "-req", "-in", "srv.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial",
             "-out", "srv.pem", "-days", "3650", "-extfile", "ext.cnf", cwd=work)
     (work / "chain.pem").write_bytes((work / "srv.pem").read_bytes() + (work / "srv.key").read_bytes())
+    # The CA key has signed the one leaf it will ever sign. Kept, it is a key that any device trusting
+    # this run's CA would accept a forged certificate from, for as long as the file survives — and
+    # --keep lets it survive.
+    (work / "ca.key").unlink()
     # Android names a certificate in its store by the old-style subject hash.
     digest = subprocess.run(["openssl", "x509", "-in", "ca.pem", "-noout", "-subject_hash_old"],
                             cwd=work, capture_output=True, text=True, check=True).stdout.strip()
@@ -276,7 +281,7 @@ class Front(BaseHTTPRequestHandler):
         raise AttributeError(name)
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 ctx.load_cert_chain(sys.argv[1])
-srv = ThreadingHTTPServer(("0.0.0.0", %d), Front)
+srv = ThreadingHTTPServer(("127.0.0.1", %d), Front)
 srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
 srv.serve_forever()
 '''
@@ -304,6 +309,19 @@ def start_front(work: Path, chain: Path) -> subprocess.Popen:
 
 
 # --------------------------------------------------------------------------- the emulator
+
+
+def require_emulator(adb: Adb) -> None:
+    """Refuses a real phone before anything is changed on it.
+
+    What follows uninstalls the app with every Account on it, and mounts a CA over the system trust
+    store. `adb root` failing used to be the only thing standing between that and a phone, and it
+    succeeds on a userdebug build or with rooted debugging turned on. An emulator says so in a
+    property no phone sets.
+    """
+    qemu = (adb.shell("getprop ro.kernel.qemu").strip(), adb.shell("getprop ro.boot.qemu").strip())
+    if not adb.serial.startswith("emulator-") or "1" not in qemu:
+        raise RuntimeError(f"{adb.serial} is not an emulator; refusing to touch its trust store or apps")
 
 
 def prepare_emulator(adb: Adb, ca: Path, digest: str) -> None:
@@ -362,6 +380,8 @@ def prepare_emulator(adb: Adb, ca: Path, digest: str) -> None:
 def install(adb: Adb, apk: Path) -> str:
     """Uninstalls first: that is what takes any Account left by earlier work with it."""
     adb.run("uninstall", PACKAGE)
+    if adb.shell(f"pm path {PACKAGE}").strip():
+        raise RuntimeError(f"{PACKAGE} is still installed after uninstalling it; its Accounts would survive")
     out = adb.run("install", str(apk))
     if "Success" not in out:
         raise RuntimeError(f"install failed: {out.strip()}")
@@ -455,24 +475,65 @@ def discover_and_select(adb: Adb) -> None:
 # --------------------------------------------------------------------------- the guard
 
 
-def hosts_named_on(root: ET.Element) -> set[str]:
-    """Every host-shaped string the screen is showing, whatever widget it sits in.
+# The host of anything written as a URL, bracketed IPv6 included. A URL names a host whatever that
+# host looks like, which is what catches the shapes a dotted-word sweep cannot: `https://luna:8443/`.
+URL_HOST = re.compile(r"[a-z][a-z0-9+.-]*://(?:[^/\s@]*@)?(\[[^\]]+\]|[^/\s:?#]+)", re.IGNORECASE)
+IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+IPV6 = re.compile(r"(?<![\w:])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![\w:])", re.IGNORECASE)
 
-    Reads the accessibility tree rather than the pixels, and does not care which field is which: a
-    screen added later that shows a URL is covered without this having to learn about it.
+# Widgets that carry a host by construction, so it is a host whatever its shape. An Account's label
+# defaults to the host of its URL — `luna` for `https://luna:8443/`, an address for an IP — and the log
+# opens every entry with that label, followed by the Collection's type: `luna  contacts`. A
+# single-label name has no dot for the dotted sweep to find, and it is the usual shape of a home or
+# tailnet server: the host that leaked in the first place was one.
+HOST_FIELDS = {"account_label": "whole", "log_detail": "first-token"}
+
+
+def _is_ip(token: str) -> bool:
+    try:
+        ipaddress.ip_address(token.strip("[]"))
+        return True
+    except ValueError:
+        return False
+
+
+def hosts_named_on(root: ET.Element) -> set[str]:
+    """Every host the screen is showing, whatever widget it sits in and whatever shape it has.
+
+    Reads the accessibility tree rather than the pixels. Four sources, because each catches a shape
+    the others miss: the host of anything written as a URL; IP literals; the widgets whose text is a
+    host by construction; and, for everything else, dotted words — which is what covers a screen
+    added later without this having to learn about it.
     """
     found: set[str] = set()
     for node in root.iter("node"):
+        rid = node.attrib.get("resource-id", "").rsplit("/", 1)[-1]
         for attribute in ("text", "content-desc"):
-            for candidate in HOSTISH.findall(node.attrib.get(attribute) or ""):
+            value = node.attrib.get(attribute) or ""
+            if not value:
+                continue
+
+            for host in URL_HOST.findall(value):
+                found.add(host.lower().strip("[].").rstrip("."))
+            for literal in IPV4.findall(value) + IPV6.findall(value):
+                if _is_ip(literal):
+                    found.add(literal.lower())
+
+            role = HOST_FIELDS.get(rid)
+            if attribute == "text" and role:
+                field_text = value.strip() if role == "whole" else (value.split() or [""])[0]
+                field_text = field_text.lower().rstrip(".")
+                if field_text:
+                    found.add(field_text)
+
+            for candidate in HOSTISH.findall(value):
                 token = candidate.lower().strip(".")
                 if token in ALLOWED_NON_HOSTS:
                     continue
-                # A version number is dotted and is not a host.
-                if all(part.isdigit() for part in token.split(".")):
+                # A version number is dotted and is not a host; an IPv4 address is caught above, so
+                # only dotted numbers that are not one are skipped here.
+                if all(part.isdigit() for part in token.split(".")) and not _is_ip(token):
                     continue
-                # A file name is dotted too; only the last label being a word makes it host-shaped,
-                # and anything left that is not the demo host is treated as one.
                 found.add(token)
     return found
 
@@ -575,11 +636,28 @@ def publish(written: dict[str, Path], version: str, site_dir: Path | None) -> No
     log(f"published {len(SCREENS)} screens taken on {version}")
 
 
-def teardown(front: subprocess.Popen | None, keep: bool) -> None:
+def teardown(front: subprocess.Popen | None, keep: bool, work: Path) -> None:
+    """Stops everything this run started, unless it was asked to leave the fixture up.
+
+    Kept means kept whole: the device checks the fixture exists for reach it as the demo host over
+    TLS, so the front has to outlive this script too, not just the server behind it.
+    """
+    if keep:
+        pid = front.pid if front else "?"
+        log(f"left running: container {CONTAINER}, TLS front pid {pid}, files in {work}")
+        log(f"stop with: kill {pid}; docker rm -f {CONTAINER}; rm -rf {work}")
+        return
     if front:
         front.terminate()
-    if not keep:
-        subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True)
+    # Radicale writes its collections as the container's user, which this script cannot delete, so
+    # the container removes them itself before it goes. Without this every run left its server data
+    # in the temp directory, and ignoring the errors was what kept that from being noticed.
+    subprocess.run(["docker", "exec", CONTAINER, "rm", "-rf", "/data/collections"], capture_output=True)
+    subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True)
+    try:
+        shutil.rmtree(work)
+    except OSError as e:
+        log(f"could not remove {work}: {e}")
 
 
 # --------------------------------------------------------------------------- entry point
@@ -591,7 +669,8 @@ def main() -> int:
     parser.add_argument("--serial", default=None, help="adb serial; the only emulator by default")
     parser.add_argument("--site-dir", type=Path, default=None,
                         help="a gh-pages checkout's image directory, to write the site copies into")
-    parser.add_argument("--keep", action="store_true", help="leave the demo server running")
+    parser.add_argument("--keep", action="store_true",
+                        help="leave the demo server and its TLS front running, for device checks")
     parser.add_argument("--prove-refusal", action="store_true",
                         help="configure an Account labelled after another host and require the "
                              "capture to refuse: a guard that has never fired is not known to work")
@@ -600,9 +679,9 @@ def main() -> int:
     serial = args.serial
     if not serial:
         devices = [l.split()[0] for l in subprocess.run(["adb", "devices"], capture_output=True, text=True)
-                   .stdout.splitlines()[1:] if "\tdevice" in l]
+                   .stdout.splitlines()[1:] if "\tdevice" in l and l.startswith("emulator-")]
         if len(devices) != 1:
-            print(f"give --serial: adb sees {devices or 'no devices'}", file=sys.stderr)
+            print(f"give --serial: adb sees {devices or 'no emulators'}", file=sys.stderr)
             return 2
         serial = devices[0]
     adb = Adb(serial)
@@ -618,6 +697,7 @@ def main() -> int:
         log(f"{BASE} is up, with a CA that exists only for this run")
 
         step(f"Emulator {serial}")
+        require_emulator(adb)
         prepare_emulator(adb, ca, digest)
         version = install(adb, args.apk)
         log(f"installed {PACKAGE} {version}")
@@ -654,9 +734,7 @@ def main() -> int:
         publish(written, version, args.site_dir)
         return 0
     finally:
-        teardown(front, args.keep)
-        if not args.keep:
-            shutil.rmtree(work, ignore_errors=True)
+        teardown(front, args.keep, work)
 
 
 if __name__ == "__main__":

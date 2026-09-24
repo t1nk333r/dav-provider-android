@@ -316,6 +316,15 @@ internal fun serializeResource(rows: ResourceRows, now: Long, deviceZone: ZoneId
         }
         live += row to part
     }
+    for (part in parts) {
+        if (part.component in claimed) continue
+        // A component no row claims describes an occurrence the phone no longer overrides: its row
+        // was deleted outright, which `CalendarProvider2.deleteEventInternal` does to any row
+        // without a `_SYNC_ID`. Locally the master's own occurrence is back — an exception row is
+        // what removed it from the expansion — so the component goes and no EXDATE is added for it.
+        calendar.dropComponent(part.component)
+        notes += "one changed instance the phone no longer holds was removed"
+    }
 
     patchComponent(
         component = masterComponent,

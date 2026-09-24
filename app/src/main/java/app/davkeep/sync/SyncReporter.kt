@@ -27,7 +27,10 @@ data class CollectionOutcome(
     val error: SyncError? = null,
     /** Rows the mapper wrote for this Collection. */
     val written: Int = 0,
-    /** Rows removed because the server's listing no longer contained them. */
+    /**
+     * Rows removed because the server's listing no longer contained them, or because the server
+     * said by name it no longer had them.
+     */
     val deleted: Int = 0,
     /** Changes step U is done with: the server answered for them, or there was nothing to send. */
     val uploaded: Int = 0,

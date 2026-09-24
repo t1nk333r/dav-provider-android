@@ -338,8 +338,56 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
      */
     override fun pendingChanges(account: Account, collection: DavCollection): List<LocalChange> {
         val calendarId = findCalendarId(account, collection) ?: return emptyList()
+        return pendingPlan(queueRows(account, calendarId))
+    }
+
+    /**
+     * The resources a revert left behind: clean rows carrying a name and no ETag.
+     *
+     * Read from the rows rather than carried from step U, because a revert an earlier run made and
+     * could not repair looks exactly the same as one this run made, and a `sync-collection` delta
+     * will never name a resource the server itself did not touch.
+     */
+    override fun revertedItems(account: Account, collection: DavCollection): Set<String> {
+        val calendarId = findCalendarId(account, collection) ?: return emptySet()
+        return revertedPlan(queueRows(account, calendarId))
+    }
+
+    /**
+     * Removes the rows of a resource the server answered `404` for by name.
+     *
+     * The three identities are the ones [resourceSelection] matches, and they are all needed here:
+     * `deleteEventInternal` cascades a master's exceptions only for a master without a `_SYNC_ID`,
+     * which is never the shape this reaches. A dirty or deleted row is an edit newer than the
+     * server's answer and is left for step U of the next run.
+     */
+    override fun deleteResource(account: Account, collection: DavCollection, key: String): Int {
+        assertAccountRegistered(account)
+        val calendarId = findCalendarId(account, collection) ?: return 0
+        val masters = ArrayList<Long>()
+        resolver.query(
+            eventsUri(account),
+            arrayOf(Events._ID),
+            "${Events.CALENDAR_ID}=? AND ${Events._SYNC_ID}=?",
+            arrayOf(calendarId.toString(), key),
+            null,
+        )?.use { cursor ->
+            while (cursor.moveToNext()) masters += cursor.getLong(0)
+        }
+        val ids = masters.joinToString(",")
+        val selection = "${Events.CALENDAR_ID}=? AND (${Events.ORIGINAL_SYNC_ID}=?" +
+            (if (masters.isEmpty()) "" else " OR ${Events._ID} IN ($ids) OR ${Events.ORIGINAL_ID} IN ($ids)") +
+            ") AND ${Events.DIRTY}=0 AND ${Events.DELETED}=0"
+        val deleted = resolver.delete(eventsUri(account), selection, arrayOf(calendarId.toString(), key))
+        if (deleted > 0) {
+            Log.i(TAG, "$key: the server no longer has it; its rows are removed")
+        }
+        return deleted
+    }
+
+    /** Every row of one calendar, as the queue and the restore both read it. */
+    private fun queueRows(account: Account, calendarId: Long): List<QueueRow> {
         val rows = ArrayList<QueueRow>()
-        val selection = "${Events.CALENDAR_ID}=?"
         resolver.query(
             eventsUri(account),
             arrayOf(
@@ -351,8 +399,9 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
                 Events.DELETED,
                 Events.SYNC_DATA1,
                 Events.UID_2445,
+                Events.SYNC_DATA4,
             ),
-            selection,
+            "${Events.CALENDAR_ID}=?",
             arrayOf(calendarId.toString()),
             null,
         )?.use { cursor ->
@@ -366,10 +415,11 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
                     deleted = cursor.getInt(5) != 0,
                     etag = cursor.getString(6),
                     uid = cursor.getString(7),
+                    overrides = cursor.getString(8)?.toIntOrNull(),
                 )
             }
         }
-        return pendingPlan(rows)
+        return rows
     }
 
     /**
@@ -458,6 +508,10 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
             put(Events.UID_2445, uid)
             put(Events.SYNC_DATA1, etag)
             putSource(this, body)
+            // The body just accepted is the resource's new source, so it decides the count as well:
+            // a stale one is a shortfall that queues the same body on every run. One parse per
+            // accepted upload is what that costs.
+            put(Events.SYNC_DATA4, overrideRows(parseResource(body)))
         }
         resolver.update(
             eventsUri(account),
@@ -602,8 +656,14 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
                 .withExpectedCount(0)
                 .build()
         }
+        // A refusal clears the master whether or not it is dirty. A master can be queued clean — its
+        // override count says a row it gave the phone has since been deleted outright — and a guard
+        // on DIRTY would then match nothing: the ETag would stay, no restore would fetch it, and the
+        // same refusal would repeat on every run without the server's override ever coming back.
+        // Nulling the ETag hands the resource to the restore, which rewrites its rows and count.
+        val masterGuard = if (armed) " AND $guard" else ""
         operations += ContentProviderOperation.newUpdate(eventsUri(account))
-            .withSelection("${Events._ID}=? AND $guard", arrayOf(change.rowId.toString()))
+            .withSelection("${Events._ID}=?$masterGuard", arrayOf(change.rowId.toString()))
             .withValues(values)
             .build()
         // The master is matched by [resourceSelection] too, and the operation above has just
@@ -972,13 +1032,16 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
                 },
             )
 
+            // The count the master carries is the one [overrideRows] derives from the same text, so
+            // that this write and [markUploaded]'s cannot disagree about what the resource holds.
+            val overrideCount = overrideRows(resource)
             val masterRef: RowRef
             if (plan.masterId != null) {
-                batch += eventUpdate(plan.masterId, eventValues(master, masterTimes))
+                batch += eventUpdate(plan.masterId, eventValues(master, masterTimes, overrideCount))
                 masterRef = RowRef.existing(plan.masterId)
             } else {
                 val at = batch.size
-                batch += eventInsert(eventValues(master, masterTimes))
+                batch += eventInsert(eventValues(master, masterTimes, overrideCount))
                 masterRef = RowRef.pending(at)
             }
             written++
@@ -986,7 +1049,7 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
 
             for ((at, component) in overrides.withIndex()) {
                 val (event, times) = component
-                val values = eventValues(event, times)
+                val values = eventValues(event, times, overrideCount)
                 val rowId = plan.overrideIds[at]
                 val ref: RowRef
                 if (rowId != null) {
@@ -1014,7 +1077,14 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
             return resolved.times
         }
 
-        private fun eventValues(event: ParsedEvent, times: EventTimes): ContentValues {
+        /**
+         * One row's columns. [overrides] is how many override components this text gave rows to,
+         * and it is stored on the master alone: `CalendarProvider2.deleteEventInternal` hard-deletes
+         * a row that carries no `_SYNC_ID`, which every override row here is, so an override the
+         * user deletes leaves no tombstone and nothing dirty. A live override count below this one
+         * is the only trace that deletion leaves, and [pendingPlan] reads it as one.
+         */
+        private fun eventValues(event: ParsedEvent, times: EventTimes, overrides: Int): ContentValues {
             val override = event.shape == EventShape.OVERRIDE
             val values = eventValuesOf(event, times)
             return ContentValues().apply {
@@ -1033,12 +1103,15 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
                     // item.
                     putNull(Events.SYNC_DATA2)
                     putNull(Events.SYNC_DATA3)
+                    // The count belongs to the resource, and the resource is the master row.
+                    putNull(Events.SYNC_DATA4)
                 } else {
                     put(Events._SYNC_ID, name)
                     putNull(Events.ORIGINAL_SYNC_ID)
                     putNull(Events.ORIGINAL_INSTANCE_TIME)
                     putNull(Events.ORIGINAL_ALL_DAY)
                     putSource(this, body)
+                    put(Events.SYNC_DATA4, overrides)
                 }
                 put(Events.UID_2445, event.uid)
                 // The ETag belongs to the resource, so every component of it carries the same one.
@@ -1268,6 +1341,20 @@ private fun putSource(values: ContentValues, text: String) {
     }
 }
 
+/**
+ * How many override components of a resource's text the read path gives rows to.
+ *
+ * The one definition of the count `Events.SYNC_DATA4` holds, used by the write path and by
+ * [CalendarMapper.markUploaded] alike: two spellings of it that drifted would queue a resource that
+ * changed nothing, on every run.
+ *
+ * Components whose times cannot be resolved are left out, because `ResourceWriter` writes no row
+ * for them either and a count they were in would be a shortfall that never closes.
+ */
+private fun overrideRows(resource: ParsedResource): Int = resource.overrides.count {
+    timesOf(it, resource.zones, ZoneId.systemDefault(), System.currentTimeMillis()).times != null
+}
+
 /** The `Events` columns one pending resource is read from. `SYNC_DATA2` is here and in no wider query. */
 private val RESOURCE_PROJECTION = arrayOf(
     Events._ID,
@@ -1319,6 +1406,11 @@ internal class QueueRow(
     val deleted: Boolean,
     val etag: String?,
     val uid: String?,
+    /**
+     * On a master, how many override components its stored text gave rows to; null on an override,
+     * and on a master written before the column existed. A null is "unknown" and never a shortfall.
+     */
+    val overrides: Int? = null,
 )
 
 /**
@@ -1331,6 +1423,13 @@ internal class QueueRow(
  *
  * A resource is the unit of upload, so an override that changed queues its *master*: the bytes are
  * the whole `.ics`, and the master is the row that carries the resource's name and ETag.
+ *
+ * An override row that was *deleted outright* changed nothing a flag can show —
+ * `CalendarProvider2.deleteEventInternal` hard-deletes a row without a `_SYNC_ID`, which every
+ * override row here is — so the master's count of the overrides its text gave rows to is what
+ * queues the resource: fewer live override rows than that count is the deletion's only trace. Only
+ * fewer; more rows than components is an override an editor inserted, which is dirty and queues the
+ * master already.
  */
 internal fun pendingPlan(rows: List<QueueRow>): List<LocalChange> {
     val deletion = ArrayList<LocalChange>()
@@ -1365,11 +1464,63 @@ internal fun pendingPlan(rows: List<QueueRow>): List<LocalChange> {
         override.originalId?.let(changedMasters::add)
         override.originalSyncId?.let { name -> mastersBySyncId[name]?.let { changedMasters += it.id } }
     }
+    val liveOverrides = HashMap<Long, Int>()
+    for (override in overrides) {
+        if (override.deleted) continue
+        val master = override.originalId?.let(mastersById::get)
+            ?: override.originalSyncId?.let(mastersBySyncId::get) ?: continue
+        liveOverrides[master.id] = (liveOverrides[master.id] ?: 0) + 1
+    }
+    for ((id, row) in mastersById) {
+        val expected = row.overrides ?: continue
+        // A master with no ETag is owed to the restore, which rewrites its rows and its count from
+        // the server. Queuing it here instead would ask the server for a fresh ETag and send the
+        // phone's stale text under it — the lost update a revert exists to prevent.
+        if (row.etag == null) continue
+        if ((liveOverrides[id] ?: 0) < expected) changedMasters += id
+    }
     for ((id, row) in mastersById) {
         if (!row.dirty && id !in changedMasters) continue
         update += LocalChange(row.id, ChangeKind.UPDATE, row.syncId, row.etag, row.uid)
     }
     return deletion.sortedBy { it.rowId } + creation.sortedBy { it.rowId } + update.sortedBy { it.rowId }
+}
+
+/**
+ * The resources whose rows are waiting for the server's copy: named, clean, and with no ETag.
+ *
+ * That is what a revert leaves — `revertLocalChange` clears `DIRTY` and `DELETED` and nulls
+ * `SYNC_DATA1` — and nothing else nulls an ETag on a clean row except a server that named none for
+ * it, which RFC 4791 §2 makes a conformance failure and which already forces a listing to fetch
+ * every member of the Collection.
+ *
+ * A master whose resource has a dirty or deleted override is left out: that resource is step U's,
+ * and fetching over it would discard the edit step U is still carrying.
+ */
+internal fun revertedPlan(rows: List<QueueRow>): Set<String> {
+    val masters = HashMap<Long, QueueRow>()
+    val mastersBySyncId = HashMap<String, QueueRow>()
+    val overrides = ArrayList<QueueRow>()
+    for (row in rows) {
+        if (row.originalId == null && row.originalSyncId == null) {
+            masters[row.id] = row
+            row.syncId?.let { mastersBySyncId[it] = row }
+        } else {
+            overrides += row
+        }
+    }
+    val held = HashSet<Long>()
+    for (override in overrides) {
+        if (!override.dirty && !override.deleted) continue
+        override.originalId?.let(held::add)
+        override.originalSyncId?.let { name -> mastersBySyncId[name]?.let { held += it.id } }
+    }
+    val owed = LinkedHashSet<String>()
+    for ((id, row) in masters) {
+        if (row.dirty || row.deleted || row.etag != null || id in held) continue
+        row.syncId?.let { owed += it }
+    }
+    return owed
 }
 
 /**

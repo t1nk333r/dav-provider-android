@@ -637,6 +637,45 @@ class ContactsMapper(
         return true
     }
 
+    /**
+     * The contacts a revert left behind: clean, keyed, and with no ETag.
+     *
+     * `revertLocalChange` clears `DIRTY` and `DELETED` and nulls `SYNC2`, and nothing else leaves a
+     * clean keyed row without an ETag except a server that named none for it. Groups are never
+     * reverted, so they are not read here.
+     */
+    override fun revertedItems(account: Account, collection: DavCollection): Set<String> {
+        val keys = LinkedHashSet<String>()
+        resolver.query(
+            RawContacts.CONTENT_URI.forSyncAdapter(account),
+            arrayOf(RawContacts.SOURCE_ID),
+            "${contactSelection()} AND ${RawContacts.DIRTY}=0 AND ${RawContacts.SYNC2} IS NULL",
+            collectionArgs(account, collection),
+            null,
+        )?.use { cursor ->
+            while (cursor.moveToNext()) cursor.getString(0)?.let { keys += it }
+        }
+        return keys
+    }
+
+    /**
+     * Removes the contact the server answered `404` for by name — the shape [deleteMissing] uses
+     * for a clean stale contact, narrowed to the one key. A dirty row is an edit made since the
+     * server answered and is left for step U of the next run.
+     */
+    override fun deleteResource(account: Account, collection: DavCollection, key: String): Int {
+        assertAccountRegistered(account)
+        val deleted = resolver.delete(
+            RawContacts.CONTENT_URI.forSyncAdapter(account),
+            "${contactSelection()} AND ${RawContacts.SOURCE_ID}=? AND ${RawContacts.DIRTY}=0",
+            collectionArgs(account, collection) + key,
+        )
+        if (deleted > 0) {
+            Log.i(LOG_TAG, "${collection.id}: $key is no longer on the server; its rows are removed")
+        }
+        return deleted
+    }
+
     // ------------------------------------------------------------------ upload rows
 
     /**

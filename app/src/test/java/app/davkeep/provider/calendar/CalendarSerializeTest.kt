@@ -92,6 +92,23 @@ class CalendarSerializeTest {
         assertEquals("THISANDFUTURE", ranged.getProperty<Property>("RANGE").get().value)
     }
 
+    /**
+     * An override row the provider deleted outright leaves no tombstone, so the component it
+     * claimed is left unclaimed here. It describes an occurrence the phone no longer overrides —
+     * the master's own is back — so it goes, and no `EXDATE` is invented for it.
+     */
+    @Test
+    fun `an override no row claims is dropped without an EXDATE`() {
+        val rows = rowsOf(SOURCE)
+        val vanished = rows.copy(overrides = rows.overrides.drop(1))
+
+        val written = written(vanished)
+
+        val events = events(written)
+        assertEquals(2, events.size)
+        assertEquals("20250616T100000", events.first().getProperty<Property>(Property.EXDATE).get().value)
+    }
+
     /** The provider drops `DTEND` from a recurring row, so the source's spelling is what is written. */
     @Test
     fun `a time change on a DURATION master keeps DURATION and bumps the sequence`() {

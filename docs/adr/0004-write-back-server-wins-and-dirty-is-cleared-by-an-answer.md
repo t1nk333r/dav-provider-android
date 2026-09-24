@@ -76,14 +76,31 @@ That arrival was left to the same run's listing, which is sound only for a listi
 member. A `sync-collection` delta names what changed since the stored token, so a conflict whose
 server-side change an earlier run had already consumed — and a refusal, where the server changed
 nothing at all and never will — left the row looking clean while holding an edit nobody kept: silent
-divergence, in the one place the design says the server wins. So step U hands back the hrefs it
-reverted and they are fetched by name, one multiget per fifty, with the ETag that multiget's own
-response carries. The alternative considered was withholding the Collection's CTag and sync token
+divergence, in the one place the design says the server wins. So what a revert left is fetched by
+name before the listing, one multiget per fifty, with the ETag that multiget's own response carries.
+The alternative considered was withholding the Collection's CTag and sync token
 whenever a member was held, and it was rejected: a permanently refused item — a body the server will
 not take, a row that will not serialise — would withhold the state on every run for as long as the
 refusal lasted, which is the stall this ADR's own rule about pending changes removed. Nothing is owed
 to the token, because every way out of a hold ends either in an upload the server answers or in a
 revert, and a revert now fetches for itself.
+
+**Amended:** the set is read from the rows at every run rather than handed back by the step U that
+made it. A master that is named, clean and carries no ETag is holding text nobody kept — precisely
+what `revertLocalChange` leaves — and nothing else produces that shape except a server that names no
+ETag for a resource, which RFC 4791 §2 forbids and which already makes every listing fetch every
+member. Carrying the set from step U meant one attempt: a multiget that failed, or came back without
+the href, left the row diverged for as long as no delta named the resource, which on Radicale was
+measured as three later runs before `ec2f2ac` and is unbounded in principle. Read from the rows, the
+fetch is made again on the next run and the divergence is bounded by one run. Two records of the same
+fact is what let the carried set go stale, so the carried one is gone rather than merged.
+
+That leaves one answer the carried set never had to handle: a resource the server deleted after the
+revert. Counting it missing would never converge, because nothing will name it again, so an explicit
+`404` for an href — a status the multistatus gives by name, the same one `sync-collection` reports a
+removal with — deletes the resource's clean rows. Dirty and deleted rows stay: an edit made since is
+newer than the answer. An href the multiget simply did not answer is still ambiguous and is still
+only counted, and asked for again next run.
 
 The tombstone case was looked for on a device and does not exist. `CalendarProvider2` hard-deletes an
 event row that carries no `_SYNC_ID` instead of marking it `DELETED=1`; an exception never carries one,
@@ -94,12 +111,30 @@ row through the provider removed it outright, leaving no row for step U to find,
 uploaded and settled. So a resource's only tombstone is its master's, and the `DELETED=0` guards on the
 override writes exclude nothing that can arise.
 
+**Amended:** "no tombstone" cuts both ways. An override row an editor deletes outright leaves nothing
+behind — no tombstone, nothing dirty, and a master the provider never touches — so the queue had no
+signal at all that an occurrence's override had gone, and the serializer, which walks the rows and
+only ever *claims* components of the stored text, kept sending the component back. The stock app does
+not reach that state: `DeleteEventHelper.deleteExceptionEvent` **updates** the exception to
+`STATUS_CANCELED` rather than deleting it, which is an ordinary dirty row and already uploaded as a
+cancelled component. A row delete is what other editors do — Fossify Calendar deletes an event by id,
+exceptions included — and `content delete` reaches it as well. So the master carries
+`Events.SYNC_DATA4`: how many override components its stored text gave rows to, written wherever that
+text is written (the fetch, and the answer to an accepted upload) through one helper, so the two
+cannot drift. Fewer live override rows than that count queues the resource, and the serializer drops
+every component no row claims. No `EXDATE` is synthesised for the dropped one: an exception row is
+what removed the master's own occurrence from the expansion, so deleting it brings that occurrence
+back locally, and the server should hold what the phone shows. The alternatives were to diff the
+stored text against the rows on every run — dragging every resource's bytes through a CursorWindow,
+which `localItems` exists to avoid — or to do nothing and leave a divergence no listing ever corrects,
+since the master's ETag does not move.
+
 ## Consequences
 
 - A conflict loses the phone's edit deliberately, and says so: the log names the resource, and the Collection stays `OK`, because nothing is left to retry.
 - Nothing is written to a server until a Collection is turned on. `writable` defaults off, so an upgrade talks to the server exactly as it did before, and the switch is the whole of the user's consent.
 - A body the server refuses leaves its row `DIRTY`, so the Collection reports Partial on every run until the body is fixed or the Collection is made read-only. That is visible rather than silent, and it is the price of never discarding an edit.
-- An upload-only run uploads and does not list, so it discovers nothing beyond what it sent — and what it gave back, which it fetches by href before it stops. That is how the server's version lands within the interval rather than at the next periodic sync, and it costs one multiget instead of a listing.
+- An upload-only run uploads and does not list, so it discovers nothing beyond what it sent — and what a revert left, which it fetches by href before it stops. That is how the server's version lands within the interval rather than at the next periodic sync, and it costs one multiget instead of a listing.
 - The account declares write capability unconditionally, so an Account whose Collections are all read-only still claims it can write. The engine, not the declaration, is what refuses.
 - Contacts cannot be told per address book — `<EditSchema>` is per account type — so a read-only address book reverts what it holds and counts it refused. Calendars are told, through `CALENDAR_ACCESS_LEVEL`, which is why the stock app greys out a calendar that may not be edited.
 - A locally created contact with no writable address book has nowhere to go: it stays `DIRTY` and is never deleted, and the log names the reason.

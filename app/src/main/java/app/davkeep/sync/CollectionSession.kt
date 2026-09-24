@@ -215,9 +215,15 @@ internal class CollectionSession(
      * without a listing to read an ETag from: the multiget REPORT asks for `getetag` beside the data,
      * so the two arrive together and describe the same version. A caller that already has the
      * listing's ETag keeps using that one.
+     *
+     * A response that names a status of its own is read before the success check, the way a listing
+     * reads one: a server answering `404` for an href has said by name that it no longer has that
+     * resource, which is a different statement from not answering at all, and only a caller that can
+     * tell the two apart can ever converge on the first.
      */
-    suspend fun multiget(hrefs: List<Url>): Map<String, FetchedBody> {
+    suspend fun multiget(hrefs: List<Url>): Fetched {
         val bodies = LinkedHashMap<String, FetchedBody>()
+        val gone = LinkedHashSet<String>()
         onOperationStart()
         val resource = newResource()
         lastMethod = "REPORT"
@@ -231,6 +237,10 @@ internal class CollectionSession(
             if (item !is MultiStatusItem.Response) return@collect
 
             val response = item.response
+            if (response.status?.value == REMOVED_STATUS) {
+                keyOf(response)?.let { gone += it }
+                return@collect
+            }
             if (!response.isSuccess()) return@collect
 
             val key = keyOf(response)
@@ -242,7 +252,7 @@ internal class CollectionSession(
         }
 
         location = resource.location
-        return bodies
+        return Fetched(bodies, gone)
     }
 
     /**
@@ -428,6 +438,9 @@ internal class CollectionSession(
  * version the body is not, and a row stored that way would claim to be current when it is not.
  */
 internal class FetchedBody(val text: String, val etag: String?)
+
+/** One multiget's answer: the bodies it carried, and the hrefs the server said it no longer has. */
+internal class Fetched(val bodies: Map<String, FetchedBody>, val gone: Set<String>)
 
 /** The answer to one `PUT` or `DELETE`, as §2 to §4's answer tables read it. */
 internal sealed interface WriteAnswer

@@ -378,6 +378,20 @@ interface ProviderMapper {
         change: LocalChange,
         sent: Boolean,
     ): Boolean
+
+    /**
+     * Keys of resources whose rows are clean and carry no ETag: what a revert leaves behind. A row
+     * in this state holds text nobody kept and cannot say which version the server has, so the run
+     * fetches it by href before anything else — on every run, until the server answers for it.
+     */
+    fun revertedItems(account: Account, collection: DavCollection): Set<String>
+
+    /**
+     * Removes every clean row of the resource stored under [key], after the server said by name
+     * that it no longer has it. Dirty and deleted rows stay: an edit made since is newer than the
+     * answer. Returns the rows removed.
+     */
+    fun deleteResource(account: Account, collection: DavCollection, key: String): Int
 }
 
 enum class ChangeKind { CREATE, UPDATE, DELETE }

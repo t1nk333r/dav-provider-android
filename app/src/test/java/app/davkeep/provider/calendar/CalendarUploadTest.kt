@@ -3,6 +3,7 @@ package app.davkeep.provider.calendar
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import app.davkeep.core.ChangeKind
+import app.davkeep.core.LocalChange
 
 /**
  * Which rows are queued for upload, and which a completed listing may delete.
@@ -75,8 +76,44 @@ class CalendarUploadTest {
     fun `nothing pending is nothing to send`() {
         assertEquals(
             emptyList<Any>(),
-            pendingPlan(listOf(row(30, syncId = NAME), row(31, originalSyncId = NAME, instanceTime = 1_000L))),
+            pendingPlan(
+                listOf(
+                    row(30, syncId = NAME, overrides = 1),
+                    row(31, originalSyncId = NAME, instanceTime = 1_000L),
+                ),
+            ),
         )
+    }
+
+    /**
+     * An override row deleted outright leaves no tombstone and nothing dirty. The master's count of
+     * the overrides its text gave rows to is the only thing left that knows one is missing.
+     */
+    @Test
+    fun `a vanished override queues the master`() {
+        val plan = pendingPlan(
+            listOf(
+                row(32, syncId = NAME, etag = "W/\"3\"", overrides = 2),
+                row(33, originalSyncId = NAME, instanceTime = 1_000L),
+            ),
+        )
+
+        assertEquals(listOf(ChangeKind.UPDATE), plan.map { it.kind })
+        assertEquals(32L, plan.single().rowId)
+    }
+
+    @Test
+    fun `a vanished override on a master owed to the restore is left to the restore`() {
+        // No ETag means a revert gave the resource back: the restore rewrites its rows and count
+        // from the server, and queueing it would send the phone's stale text under a fresh ETag.
+        val plan = pendingPlan(
+            listOf(
+                row(32, syncId = NAME, etag = null, overrides = 2),
+                row(33, originalSyncId = NAME, instanceTime = 1_000L),
+            ),
+        )
+
+        assertEquals(emptyList<LocalChange>(), plan)
     }
 
     @Test
@@ -132,6 +169,37 @@ class CalendarUploadTest {
         assertEquals(listOf(3L, 4L), doomed)
     }
 
+    /**
+     * What a revert leaves: `DIRTY` and `DELETED` cleared and the ETag nulled, on a row that still
+     * carries the resource's name. Nothing else is asked for by href before the listing.
+     */
+    @Test
+    fun `a reverted resource is a clean master with no ETag`() {
+        val owed = revertedPlan(
+            listOf(
+                row(40, syncId = NAME),
+                row(41, originalSyncId = NAME, instanceTime = 1_000L),
+                row(42, syncId = OTHER, etag = "W/\"7\""),
+                row(43, dirty = true, uid = "minted"),
+            ),
+        )
+
+        assertEquals(setOf(NAME), owed)
+    }
+
+    /** A resource with an unsent edit on it is step U's; fetching over it would discard the edit. */
+    @Test
+    fun `a resource with a dirty override is not fetched over`() {
+        val owed = revertedPlan(
+            listOf(
+                row(40, syncId = NAME),
+                row(41, originalSyncId = NAME, instanceTime = 1_000L, dirty = true),
+            ),
+        )
+
+        assertEquals(emptySet<String>(), owed)
+    }
+
     private fun row(
         id: Long,
         syncId: String? = null,
@@ -142,6 +210,7 @@ class CalendarUploadTest {
         deleted: Boolean = false,
         etag: String? = null,
         uid: String? = null,
+        overrides: Int? = null,
     ) = QueueRow(
         id = id,
         syncId = syncId,
@@ -151,6 +220,7 @@ class CalendarUploadTest {
         deleted = deleted,
         etag = etag,
         uid = uid,
+        overrides = overrides,
     )
 
     private companion object {

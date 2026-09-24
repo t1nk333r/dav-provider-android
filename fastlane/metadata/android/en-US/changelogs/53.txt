@@ -1,0 +1,9 @@
+Two fixes to what happens between sending an edit and reading the server back.
+
+* an edit the server gave back — refused by a read-only Collection, or beaten
+  by a 412 — is now fetched again on every run until the server answers, so a
+  fetch that fails once no longer leaves the phone's rejected text in place; a
+  resource the server has since deleted is removed from the phone
+* deleting one occurrence of a recurring event that already had its own entry
+  could stay on the phone forever: the deletion left no trace an upload could
+  see, and the server kept the occurrence. The event is now sent without it.

@@ -210,9 +210,14 @@ internal class CollectionSession(
      * The responses are keyed exactly as the listing keyed them, because both derive the key from the
      * href with the same rule; a body that arrives under an href we did not ask for is ignored rather
      * than invented a row for.
+     *
+     * Each body carries the ETag its own response named, which is what lets a resource be fetched
+     * without a listing to read an ETag from: the multiget REPORT asks for `getetag` beside the data,
+     * so the two arrive together and describe the same version. A caller that already has the
+     * listing's ETag keeps using that one.
      */
-    suspend fun multiget(hrefs: List<Url>): Map<String, String> {
-        val bodies = LinkedHashMap<String, String>()
+    suspend fun multiget(hrefs: List<Url>): Map<String, FetchedBody> {
+        val bodies = LinkedHashMap<String, FetchedBody>()
         onOperationStart()
         val resource = newResource()
         lastMethod = "REPORT"
@@ -231,12 +236,20 @@ internal class CollectionSession(
             val key = keyOf(response)
             if (key == null) return@collect
 
-            bodyOf(response)?.let { bodies[key] = it }
+            bodyOf(response)?.let {
+                bodies[key] = FetchedBody(it, storedEtag(response[GetETag::class.java]?.eTag))
+            }
         }
 
         location = resource.location
         return bodies
     }
+
+    /**
+     * The URL of one member, built the way every other request in this class builds one: on the
+     * location the last request left, so a Collection the server redirected stays followed.
+     */
+    fun memberUrl(href: String): Url = Url(location.protocolWithAuthority + href)
 
     /**
      * §6 step U: one resource, sent whole.
@@ -249,13 +262,18 @@ internal class CollectionSession(
      *
      * The conditional headers are the caller's, because only it knows what the row's state is: an
      * update carries `If-Match` with the ETag it last stored, a create carries `If-None-Match: *` so
-     * the name it minted cannot overwrite an item this run has not seen.
+     * the name it minted cannot overwrite an item this run has not seen. [ifMatchAny] is the third
+     * case and the weakest: an update of a resource the server holds under a version this phone
+     * cannot name. It says only that the resource still exists, which is the one thing that is
+     * known, and it is sent rather than nothing at all because an unconditional `PUT` of a resource
+     * the server already has is the lost update the whole write path exists to prevent.
      */
     suspend fun put(
         href: String,
         body: String,
         contentType: String,
         ifMatch: String?,
+        ifMatchAny: Boolean,
         ifNoneMatchAny: Boolean,
     ): PutAnswer {
         onOperationStart()
@@ -263,7 +281,10 @@ internal class CollectionSession(
         lastMethod = "PUT"
 
         val headers = Headers.build {
-            ifMatch?.let { append(HttpHeaders.IfMatch, entityTag(it)) }
+            when {
+                ifMatch != null -> append(HttpHeaders.IfMatch, entityTag(ifMatch))
+                ifMatchAny -> append(HttpHeaders.IfMatch, "*")
+            }
             if (ifNoneMatchAny) append(HttpHeaders.IfNoneMatch, "*")
         }
 
@@ -316,7 +337,8 @@ internal class CollectionSession(
     }
 
     /**
-     * The ETag of one member, asked for when a `PUT` was accepted without naming it.
+     * The ETag of one member: asked for when a `PUT` was accepted without naming it, and when an
+     * update is about to be sent for a row that holds none.
      *
      * RFC 9110 does not oblige a server to answer a write with an `ETag`, and Radicale is not the
      * only one that sometimes does not. Storing null instead costs a download: the listing cannot
@@ -325,7 +347,9 @@ internal class CollectionSession(
      * already has. One extra `PROPFIND Depth: 0` buys that back.
      *
      * Null when the server has no ETag for it either — then the row keeps a null and takes the same
-     * path an ETag-less item has always taken.
+     * path an ETag-less item has always taken — and null when the server does not have the member
+     * at all, which is not a failure of this run: the caller sends its `PUT` under `If-Match: *`,
+     * the server refuses it, and the conflict path puts the Collection's own answer on the row.
      */
     suspend fun etagOf(href: String): String? {
         onOperationStart()
@@ -333,9 +357,13 @@ internal class CollectionSession(
         lastMethod = "PROPFIND"
 
         var etag: String? = null
-        resource.propfind(0, WebDAV.GetETag).collect { item ->
-            if (item is MultiStatusItem.Response && item.response.isSuccess())
-                etag = item.response[GetETag::class.java]?.eTag
+        try {
+            resource.propfind(0, WebDAV.GetETag).collect { item ->
+                if (item is MultiStatusItem.Response && item.response.isSuccess())
+                    etag = item.response[GetETag::class.java]?.eTag
+            }
+        } catch (e: NotFoundException) {
+            return null
         }
         return storedEtag(etag)
     }
@@ -392,6 +420,14 @@ internal class CollectionSession(
         CollectionType.CALENDAR -> response[CalendarData::class.java]?.iCalendar
     }
 }
+
+/**
+ * One member's body as a multiget answered for it, with the ETag that same response named.
+ *
+ * The two belong together: an ETag read anywhere other than beside the body it describes may name a
+ * version the body is not, and a row stored that way would claim to be current when it is not.
+ */
+internal class FetchedBody(val text: String, val etag: String?)
 
 /** The answer to one `PUT` or `DELETE`, as §2 to §4's answer tables read it. */
 internal sealed interface WriteAnswer

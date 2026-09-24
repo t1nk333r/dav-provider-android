@@ -538,13 +538,28 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
      *
      * What proves the row is the one the answer is about differs with [sent], because the two
      * callers stand in different places. A change that was sent was armed by [serialize], so an
-     * edit made while the server was saying no shows as a row that is no longer [IN_FLIGHT] and is
-     * left exactly as the editor left it: it is newer than the refusal and meets the same answer
-     * next run. A change that was refused was never sent and never armed, and there was no window
-     * to arm against — this batch is one provider transaction, so its selections are evaluated with
-     * no editor write able to land between them and the clear, and any dirty row of the resource is
+     * edit made while the server was saying no shows as a row that is no longer [IN_FLIGHT]. A
+     * change that was refused was never sent and never armed, and there was no window to arm
+     * against — this batch is one provider transaction, so its selections are evaluated with no
+     * editor write able to land between them and the clear, and any dirty row of the resource is
      * the edit the refusal is about. A tombstone is armed in neither case: it is invisible to the
      * editor and nothing can change it.
+     *
+     * The revert of a sent change is all-or-nothing across the resource, and that is what the
+     * assertion in front of it buys. Row-by-row guards reverted the master while a sibling row kept
+     * its edit, and the master's revert drops the ETag: the resource stayed pending with the
+     * phone's rejected body on it and nothing left to send `If-Match` with, so the next run's `PUT`
+     * went out unconditionally and overwrote the version the `412` was about — client wins, by
+     * halves. Asserting that no row of the resource has left [IN_FLIGHT] rolls the whole batch back
+     * instead: `SQLiteContentProvider` applies a batch inside one transaction and never marks it
+     * successful once an operation throws, so a failed expected count leaves the ETag where it was
+     * and the next run meets the same `412` conditionally. Observed on a device against a proxy
+     * stalling `PUT` for 18 s: without the assertion the run after the conflict sent `PUT` with no
+     * `If-Match` and the server took the rejected body; with it, the second `PUT` carried
+     * `If-Match` and was refused again.
+     *
+     * A refusal is left row-by-row on purpose: it sends nothing, so a read-only Collection reverts
+     * what it can and gives the rest back at the next run, and no `PUT` can follow it to do damage.
      *
      * @return false when any row of the resource still holds an unsent edit, in which case the
      * conflict has not been resolved and the caller must keep the resource out of this run's fetch.
@@ -557,11 +572,8 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
     ): Boolean {
         assertAccountRegistered(account)
         val calendarId = findCalendarId(account, collection) ?: return false
-        val guard = if (sent && change.kind != ChangeKind.DELETE) {
-            "${Events.DIRTY}=$IN_FLIGHT"
-        } else {
-            "${Events.DIRTY}<>0"
-        }
+        val armed = sent && change.kind != ChangeKind.DELETE
+        val guard = if (armed) "${Events.DIRTY}=$IN_FLIGHT" else "${Events.DIRTY}<>0"
         val values = ContentValues().apply {
             change.key?.let { put(Events._SYNC_ID, it) }
             put(Events.DELETED, 0)
@@ -576,25 +588,44 @@ class CalendarMapper(private val context: Context) : ProviderMapper {
             putNull(Events.MUTATORS)
             putNull(Events.SYNC_DATA1)
         }
-        resolver.applyBatch(
-            authority,
-            arrayListOf(
-                ContentProviderOperation.newUpdate(eventsUri(account))
-                    .withSelection("${Events._ID}=? AND $guard", arrayOf(change.rowId.toString()))
-                    .withValues(values)
-                    .build(),
-                // The master is matched by [resourceSelection] too, and the operation above has
-                // just cleared its flag, so the guard is also what keeps the overrides' values —
-                // ORIGINAL_SYNC_ID among them — off the row that carries the resource's name.
-                ContentProviderOperation.newUpdate(eventsUri(account))
-                    .withSelection(
-                        "${resourceSelection(calendarId, change)} AND $guard",
-                        resourceArgs(calendarId, change),
-                    )
-                    .withValues(overrides)
-                    .build(),
-            ),
-        )
+        val operations = ArrayList<ContentProviderOperation>(3)
+        if (armed) {
+            // First, so that a resource with any moved row is refused before a value is written.
+            // A row an editor touched in flight is no longer IN_FLIGHT; so is one it turned into a
+            // tombstone, since the provider writes DIRTY=1 with DELETED=1; and so is an override it
+            // inserted, which was never armed at all.
+            operations += ContentProviderOperation.newAssertQuery(eventsUri(account))
+                .withSelection(
+                    "${resourceSelection(calendarId, change)} AND ${Events.DIRTY}<>$IN_FLIGHT",
+                    resourceArgs(calendarId, change),
+                )
+                .withExpectedCount(0)
+                .build()
+        }
+        operations += ContentProviderOperation.newUpdate(eventsUri(account))
+            .withSelection("${Events._ID}=? AND $guard", arrayOf(change.rowId.toString()))
+            .withValues(values)
+            .build()
+        // The master is matched by [resourceSelection] too, and the operation above has just
+        // cleared its flag, so the guard is also what keeps the overrides' values —
+        // ORIGINAL_SYNC_ID among them — off the row that carries the resource's name.
+        operations += ContentProviderOperation.newUpdate(eventsUri(account))
+            .withSelection(
+                "${resourceSelection(calendarId, change)} AND $guard",
+                resourceArgs(calendarId, change),
+            )
+            .withValues(overrides)
+            .build()
+        try {
+            resolver.applyBatch(authority, operations)
+        } catch (e: OperationApplicationException) {
+            Log.i(
+                TAG,
+                "Row ${change.rowId} moved while its upload was in flight; " +
+                    "the conflict is not resolved and the resource keeps its ETag",
+            )
+            return false
+        }
         return !stillPending(account, calendarId, change)
     }
 

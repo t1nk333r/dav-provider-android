@@ -285,19 +285,49 @@ class SyncEngine(
             // a resource's rows wholesale and would discard an edit that has not left the phone yet.
             uploads = uploadChanges(account, collection, session, errors)
 
+            // What step U gave back is fetched here, by href, before any listing runs. A revert
+            // leaves the phone's rejected edit on the rows with no ETag, and it is the server's copy
+            // that belongs there; waiting for the listing to bring it is only sound when the listing
+            // names every member. A `sync-collection` delta names what changed since the stored
+            // token, so a conflict whose server-side change this account already consumed — and a
+            // refusal, where the server changed nothing at all — would never be named, and the row
+            // would sit as if clean while holding an edit this run deliberately gave up. Asking for
+            // those hrefs costs one REPORT per fifty resources and is owed by the revert itself.
+            //
+            // When step U has already ended the Collection on an error, the restore is still tried —
+            // the rows were given back either way — but its own failure must not replace the error the
+            // run actually met: a step-U credential failure reported as a transport failure on the
+            // REPORT would send the user after the wrong problem.
+            val failure = uploads.error
+            val restore = if (failure == null) {
+                restoreReverted(account, collection, session, uploads.reverted)
+            } else {
+                try {
+                    restoreReverted(account, collection, session, uploads.reverted)
+                } catch (e: AccountVanishedException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Not reported on its own: the run already reports step U's error, and every
+                    // resource this failed to fetch is counted as missing in the outcome below.
+                    Restore(written = 0, unanswered = uploads.reverted)
+                }
+            }
+
             // Step U ended the Collection: the listing would meet the same failure, and the changes it
             // never reached are still DIRTY for the next run.
-            val failure = uploads.error
             if (failure != null) {
                 record(result, failure)
-                return uploads.outcome(collection)
+                return uploads.outcome(collection).copy(written = restore.written, missing = restore.unanswered.size)
             }
 
             // An upload-only run stops here, with no listing and no state write: the framework asked
-            // for the uploads, and the periodic run is what lists. The exception is a Collection where
-            // step U gave something up — a reverted row is a row waiting for the server's version,
-            // and the next periodic run may be an hour away.
-            if (uploadOnly && !uploads.reverted) return uploads.outcome(collection)
+            // for the uploads, and the periodic run is what lists. A revert no longer makes it carry
+            // on — the rows it gave back were fetched above, which is what the listing was for. A
+            // resource the restore did not get back is counted, so the run does not report as done
+            // while a row still holds the edit it gave up.
+            if (uploadOnly) {
+                return uploads.outcome(collection).copy(written = restore.written, missing = restore.unanswered.size)
+            }
 
             // The answer this run got, carried into step 7's state write: the poll path must not
             // overwrite what the probe just learned.
@@ -320,6 +350,7 @@ class SyncEngine(
                         supportsSyncCollection = true,
                         capabilityCheckedAt = startedAt,
                         result = result,
+                        restore = restore,
                         relisted = report.relisted,
                     )
                 }
@@ -330,7 +361,10 @@ class SyncEngine(
                 capabilityCheckedAt = startedAt
             }
 
-            poll(account, collection, session, state, uploads, supportsSyncCollection, capabilityCheckedAt, result)
+            poll(
+                account, collection, session, state, uploads,
+                supportsSyncCollection, capabilityCheckedAt, restore, result,
+            )
         } catch (e: AccountVanishedException) {
             throw e
         } catch (e: Exception) {
@@ -349,11 +383,12 @@ class SyncEngine(
         uploads: Uploads,
         supportsSyncCollection: Boolean?,
         capabilityCheckedAt: Long,
+        restore: Restore,
         result: SyncResult,
     ): CollectionOutcome {
         val ctag = session.ctag()
         if (ctag != null && ctag == state.ctag)
-            return uploads.outcome(collection).copy(unchanged = true)
+            return uploads.outcome(collection).copy(written = restore.written, missing = restore.unanswered.size, unchanged = true)
 
         return applyChanges(
             account, collection, session, session.members(), uploads,
@@ -364,6 +399,7 @@ class SyncEngine(
             supportsSyncCollection = supportsSyncCollection,
             capabilityCheckedAt = capabilityCheckedAt,
             result = result,
+            restore = restore,
         )
     }
 
@@ -383,6 +419,8 @@ class SyncEngine(
         supportsSyncCollection: Boolean?,
         capabilityCheckedAt: Long,
         result: SyncResult,
+        /** What the fetch of step U's give-backs already wrote this run, and what it did not get. */
+        restore: Restore = Restore(written = 0, unanswered = emptySet()),
         relisted: Boolean = false,
     ): CollectionOutcome {
         val local = mapper.localItems(account, collection)
@@ -392,15 +430,17 @@ class SyncEngine(
         //
         // The exception is the href of a change step U did not send: its rows are still DIRTY, and
         // `upsert` replaces a resource's rows wholesale, so fetching it here would discard the edit
-        // the next run is still carrying.
+        // the next run is still carrying. What step U *gave up* is not here at all: it was fetched
+        // by href before this listing ran, because a listing is not something a revert may depend on.
         val wanted = mutableMapOf<String, RemoteItem>()
         for ((key, item) in members.byKey)
             if (key !in uploads.held && (item.etag == null || local[key] != item.etag))
                 wanted[key] = item
 
         // Steps 3 and 4, in batches of 50: each batch is committed, and its ETags are persisted with
-        // the bodies they belong to, so a later diff cannot see a body without its ETag.
-        var written = 0
+        // the bodies they belong to, so a later diff cannot see a body without its ETag. The ETag
+        // stored is the listing's, which is the one the next run's diff compares against.
+        var written = restore.written
         val fetched = HashSet<String>(wanted.size)
         for (batch in wanted.entries.chunked(MULTIGET_BATCH_SIZE)) {
             ensureAccountRegistered(account)
@@ -409,7 +449,7 @@ class SyncEngine(
             if (bodies.isEmpty()) continue
 
             val etags = batch.associate { it.key to it.value.etag }.filterKeys { it in bodies }
-            written += mapper.upsert(account, collection, bodies, etags)
+            written += mapper.upsert(account, collection, bodies.mapValues { it.value.text }, etags)
             fetched += bodies.keys
         }
 
@@ -417,6 +457,15 @@ class SyncEngine(
         // the batch carried on without it — and the only place that absence can still be noticed is
         // here, before anything is claimed about the Collection.
         val missing = wanted.keys.count { it !in fetched }
+
+        // A give-back the restore did not get is stranded only if this listing did not deal with it
+        // either: named, it was fetched (or counted above if not); reported removed, or absent from a
+        // full listing that completed, it is deleted below. Anything else still holds the edit the
+        // revert gave up. It is reported, but it does not withhold the state: this listing is complete,
+        // and keeping its token would not make a later delta name a change already behind it.
+        val stranded = restore.unanswered.count { key ->
+            key !in members.byKey && key !in members.removed && !(fullListing && members.completed)
+        }
 
         // Step 6, and only behind a listing that earned it. A truncated listing is a well-formed
         // answer about part of a Collection, and deleting everything it did not mention would take
@@ -441,6 +490,9 @@ class SyncEngine(
         // and a row that is still dirty is found by `pendingChanges` at the start of the next run
         // whatever the token says — withholding the token for one would cost a full listing every run
         // for as long as the server keeps refusing that body, which is the stall this rule removed.
+        // Nor does a held member the listing named: what that member's resource is owed is the
+        // server's copy on the rows the run gave back, and step U fetched that by href, so nothing
+        // is waiting on this token being asked for again.
         val incomplete = missing > 0 || members.truncated
         if (!incomplete) {
             mapper.writeState(
@@ -464,11 +516,60 @@ class SyncEngine(
             pending = uploads.pending,
             refused = uploads.refused,
             conflicts = uploads.conflicts,
-            missing = missing,
+            missing = missing + stranded,
             truncated = members.truncated,
             relisted = relisted,
         )
     }
+
+    /**
+     * The server's copy of every resource step U gave back, fetched by href in the same run.
+     *
+     * A revert is only half an answer: it stops the rows claiming to be current — `DIRTY` cleared,
+     * the ETag nulled — but it leaves the user's rejected text on them, and the server's version is
+     * what belongs there. The listing used to be relied on for that, which is sound only when it
+     * names every member: a `sync-collection` delta names what changed since the stored token, so a
+     * conflict whose server-side change an earlier run already consumed, and a refusal on a
+     * Collection the server never touched, would both leave the row looking clean and holding an
+     * edit nobody kept.
+     *
+     * The ETag stored is the one the multiget's own response named, because there is no listing here
+     * to read one from and a row whose text has no ETag is fetched again by the next listing that
+     * names it. A server that names none in a multiget is asked once, per resource, with the same
+     * `PROPFIND Depth: 0` an ETag-less `PUT` answer uses.
+     *
+     * A resource the multiget does not answer is counted in [Restore.unanswered] and left as the
+     * revert left it: clean, with a null ETag and the given-up text. That is not yet self-healing. A
+     * full listing names it and fetches it, but a `sync-collection` delta names it only if the server
+     * touches it again, and a later run does not retry this restore — so a restore that fails or
+     * comes back short can leave the row diverged until then. The count at least keeps the run from
+     * reporting as done; making the restore retry across runs is issue #34.
+     */
+    private suspend fun restoreReverted(
+        account: Account,
+        collection: DavCollection,
+        session: CollectionSession,
+        keys: Set<String>,
+    ): Restore {
+        if (keys.isEmpty()) return Restore(written = 0, unanswered = emptySet())
+
+        var written = 0
+        val answered = HashSet<String>(keys.size)
+        for (batch in keys.chunked(MULTIGET_BATCH_SIZE)) {
+            ensureAccountRegistered(account)
+
+            val bodies = session.multiget(batch.map { session.memberUrl(it) })
+            if (bodies.isEmpty()) continue
+
+            val etags = bodies.mapValues { (key, body) -> body.etag ?: session.etagOf(key) }
+            written += mapper.upsert(account, collection, bodies.mapValues { it.value.text }, etags)
+            answered += bodies.keys
+        }
+        return Restore(written = written, unanswered = keys.filterTo(HashSet()) { it !in answered })
+    }
+
+    /** What [restoreReverted] wrote, and which of the resources it asked for it did not get back. */
+    private data class Restore(val written: Int, val unanswered: Set<String>)
 
     /**
      * §6 step U: every row the phone has changed, sent before anything of the server's is read.
@@ -495,7 +596,8 @@ class SyncEngine(
 
         // §7: a Collection the user has not made writable is refused rather than uploaded. An edit
         // to a resource the server already has is given up here — the narrow successor of the §7
-        // backstop — and the fetch that follows in this same run makes the revert visible.
+        // backstop — and the key of everything given back is returned so that this run fetches the
+        // server's copy onto those rows: the server changed nothing, so no listing would name them.
         //
         // A create is the exception, and it is not a small one. A contact made in the editor exists
         // nowhere else: there is no server copy for the fetch to put back, so clearing its DIRTY
@@ -505,14 +607,14 @@ class SyncEngine(
         // the flag again. It stays dirty and is counted refused on every run until a Collection can
         // take it.
         if (!collection.writable) {
-            var refusedReverted = false
+            val refusedReverted = mutableSetOf<String>()
             val refusedHeld = mutableSetOf<String>()
             for (change in revertibleOnRefusal(changes)) {
                 ensureAccountRegistered(account)
                 // A row that moved while this ran is newer than the refusal, so it keeps its edit
                 // and is kept out of this run's fetch rather than being written over by it.
                 if (mapper.revertLocalChange(account, collection, change, sent = false)) {
-                    refusedReverted = true
+                    change.key?.let { refusedReverted += it }
                 } else {
                     change.key?.let { refusedHeld += it }
                 }
@@ -522,7 +624,7 @@ class SyncEngine(
 
         var uploaded = 0
         var pending = 0
-        var reverted = false
+        val reverted = mutableSetOf<String>()
         val conflicts = mutableListOf<String>()
         val held = mutableSetOf<String>()
 
@@ -548,15 +650,15 @@ class SyncEngine(
 
                             ChangeAction.Revert -> {
                                 // The server's item moved after this phone last saw it, so the
-                                // deletion is given up and the run's fetch brings the server's version
-                                // back onto the row. Server wins, as it does for an update.
+                                // deletion is given up and the server's version is fetched back onto
+                                // the row. Server wins, as it does for an update.
                                 //
                                 // Unless the row moved here too: a deletion undone while the server
                                 // was answering is not this run's to resolve, and calling it a
                                 // conflict would report a resolution that did not happen.
                                 if (mapper.revertLocalChange(account, collection, change, sent = true)) {
                                     conflicts += change.key
-                                    reverted = true
+                                    reverted += change.key
                                 } else {
                                     pending++
                                     held += change.key
@@ -586,12 +688,26 @@ class SyncEngine(
                         val target = change.key
                             ?: createPath(session.collectionUrl.encodedPath, collection, body.uid)
 
+                        // An update of a resource the server already holds is never sent
+                        // unconditionally. A null ETag on such a row says this phone does not know
+                        // which version the server has, and a `PUT` without `If-Match` would take
+                        // whatever is there — the lost update `server wins` exists to prevent, and
+                        // the shape a partial revert after a 412 used to leave behind. One
+                        // `PROPFIND Depth: 0` is what the phone does not know, so it is asked for,
+                        // and the `PUT` that follows is an ordinary conditional one. Holding the
+                        // change back instead would stand the edit still forever on a server whose
+                        // ETag this phone has never managed to store.
+                        val ifMatch = if (creating) null else change.etag ?: session.etagOf(target)
+
                         val action = answerOf(
                             session.put(
                                 href = target,
                                 body = body.text,
                                 contentType = contentTypeOf(collection),
-                                ifMatch = if (creating) null else change.etag,
+                                ifMatch = ifMatch,
+                                // A server that names no ETag for the resource leaves nothing to be
+                                // conditional on but its existence, and that much is still said.
+                                ifMatchAny = !creating && ifMatch == null,
                                 ifNoneMatchAny = creating,
                             ),
                         )
@@ -642,16 +758,16 @@ class SyncEngine(
                                 // store behind as a duplicate.
                                 //
                                 // A create is reverted under the name it was PUT to, not under its
-                                // own null key: the row has to carry that key before the listing
-                                // runs, or nothing links the row to the resource the server already
-                                // holds and the fetch inserts it a second time.
+                                // own null key: the row has to carry that key before the resource is
+                                // fetched back, or nothing links the row to the resource the server
+                                // already holds and the fetch inserts it a second time.
                                 val reverting = if (creating) change.copy(key = target) else change
                                 // A revert the provider withheld means the row is newer than the
                                 // 412, so this run neither resolved the conflict nor may fetch over
                                 // it: both would discard the edit made while the server said no.
                                 if (mapper.revertLocalChange(account, collection, reverting, sent = true)) {
                                     conflicts += (change.key ?: target)
-                                    reverted = true
+                                    reverted += (change.key ?: target)
                                 } else {
                                     pending++
                                     held += (change.key ?: target)
@@ -682,6 +798,7 @@ class SyncEngine(
                         pending = pending + (changes.size - index),
                         conflicts = conflicts,
                         held = held,
+                        reverted = reverted,
                         error = error,
                     )
 
@@ -892,8 +1009,12 @@ private class Uploads(
     val held: Set<String> = emptySet(),
     /** The failure that ended step U, when one did. */
     val error: SyncError? = null,
-    /** True when step U gave a change up, which an upload-only run is obliged to follow up. */
-    val reverted: Boolean = false,
+    /**
+     * The keys of the resources step U gave back, whose rows now hold an edit nobody wants and no
+     * ETag. They are fetched by href in the same run, because a listing may have nothing to say
+     * about a resource whose change it already reported.
+     */
+    val reverted: Set<String> = emptySet(),
 ) {
 
     /** This Collection's part of the run, as step U left it. */
